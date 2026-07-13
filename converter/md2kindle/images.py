@@ -111,11 +111,18 @@ class ImageCache:
             if data is None:
                 self.manifest.set_image(src, None, None, True)
                 return None
-            fname = self._store(data)
+            try:
+                fname = self._store(data)
+            except Exception:
+                self.manifest.set_image(src, None, None, True)
+                return None
             self.manifest.set_image(src, hash_bytes(data), f"assets/{fname}", False)
             return fname
         # local attachment, relative to the note's directory in the input vault
         local = self.input_dir / _posix_dir(src_relpath) / src
         if not local.exists():
             return None
-        return self._store(local.read_bytes())
+        try:
+            return self._store(local.read_bytes())
+        except Exception:
+            return None

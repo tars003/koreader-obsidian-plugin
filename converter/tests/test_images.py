@@ -64,3 +64,29 @@ def test_dedup_identical_content_stored_once(tmp_path):
     cache.process_html('<img src="https://x/a.png">', "n.md")
     cache.process_html('<img src="https://x/b.png">', "n.md")
     assert len(list((tmp_path / "assets").glob("*.jpg"))) == 1
+
+
+def test_remote_non_image_bytes_fail_soft(tmp_path):
+    # soft-404 / non-image payload: HTTP 200 with HTML bytes that cannot be decoded
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, content=b"<html>not an image</html>\n")
+    )
+    cache, _, m = _cache(tmp_path, transport=transport)
+    # must not raise
+    html, failed = cache.process_html('<img src="https://x/a.png">', "note.md")
+    assert failed == 1
+    assert "[image unavailable: https://x/a.png]" in html
+    assert m.get_image("https://x/a.png")["failed"] is True
+
+
+def test_corrupt_image_bytes_fail_soft(tmp_path):
+    # download succeeds (HTTP 200) but bytes are a truncated/corrupt PNG
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, content=b"\x89PNG\r\n\x1a\n")
+    )
+    cache, _, m = _cache(tmp_path, transport=transport)
+    # must not raise
+    html, failed = cache.process_html('<img src="https://x/a.png">', "note.md")
+    assert failed == 1
+    assert "[image unavailable: https://x/a.png]" in html
+    assert m.get_image("https://x/a.png")["failed"] is True
