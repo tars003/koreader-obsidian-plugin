@@ -62,7 +62,12 @@ def render_markdown(md: str, css: str = DEFAULT_CSS, title: str | None = None) -
             '<span class="toctitle">Table of Contents</span>',
             '<span class="toctitle">Contents</span>',
         )
-        body = toc_html + "\n" + body
+        # Inject TOC after the first H1 (title first, then TOC)
+        m = re.search(r"</h1>", body)
+        if m:
+            body = body[: m.end()] + "\n" + toc_html + body[m.end() :]
+        else:
+            body = toc_html + "\n" + body
 
     return (
         "<!DOCTYPE html>\n"
