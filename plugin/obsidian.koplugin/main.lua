@@ -21,6 +21,12 @@ function ObsidianPlugin:init()
     if self.ui.document then
         self:initLinkHandler()
     end
+    -- First-run: prompt for vault root
+    if not self.settings:readSetting("vault_root") then
+        UIManager:nextTick(function()
+            self:promptVaultRoot()
+        end)
+    end
 end
 
 function ObsidianPlugin:loadSettings()

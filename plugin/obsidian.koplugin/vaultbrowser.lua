@@ -187,6 +187,38 @@ function VaultBrowser.showBrowser(plugin)
     end
 
     local tree = VaultBrowser.scanVault(vault_root)
+
+    -- Load and apply persisted expand-state
+    local expand_state = plugin.settings:readSetting("tree_expanded") or {}
+    local function applyState(node)
+        if expand_state[node.path] == "expanded" then
+            node.expanded = true
+        elseif expand_state[node.path] == "collapsed" then
+            node.expanded = false
+        end
+        if node.children then
+            for _, child in ipairs(node.children) do
+                applyState(child)
+            end
+        end
+    end
+    applyState(tree)
+
+    local function saveState(node)
+        if node.children and #node.children > 0 then
+            expand_state[node.path] = node.expanded and "expanded" or "collapsed"
+            for _, child in ipairs(node.children) do
+                saveState(child)
+            end
+        end
+    end
+
+    local function persist()
+        saveState(tree)
+        plugin.settings:saveSetting("tree_expanded", expand_state)
+        plugin:saveSettings()
+    end
+
     local menu
 
     local function rebuildMenu()
@@ -206,9 +238,11 @@ function VaultBrowser.showBrowser(plugin)
         callback = function(item)
             if item.action == "collapse" then
                 VaultBrowser.collapseAll(tree)
+                persist()
                 rebuildMenu()
             elseif item.action == "expand" then
                 VaultBrowser.expandAll(tree)
+                persist()
                 rebuildMenu()
             elseif item.action == "focus" then
                 local current_file = plugin.ui.document and plugin.ui.document.file
@@ -218,6 +252,7 @@ function VaultBrowser.showBrowser(plugin)
                         for _, n in ipairs(chain) do
                             n.expanded = true
                         end
+                        persist()
                         rebuildMenu()
                     else
                         UIManager:show(InfoMessage:new{ text = _("Current file not in vault."), timeout = 2 })
@@ -225,6 +260,7 @@ function VaultBrowser.showBrowser(plugin)
                 end
             elseif item.type == "directory" then
                 VaultBrowser.toggleNode(tree, item.path)
+                persist()
                 rebuildMenu()
             elseif item.type == "file" then
                 UIManager:close(menu)
