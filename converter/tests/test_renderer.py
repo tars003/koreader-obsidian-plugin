@@ -26,6 +26,6 @@ def test_title_fallback_prepends_h1():
 
 
 def test_toc_injected_with_3_plus_headings():
-    md = "# A\n\n## B\n\n### C\n\ntext\n"
+    md = "# A\n\n## B\n\ntext\n"
     html = render_markdown(md)
     assert 'class="toc"' in html

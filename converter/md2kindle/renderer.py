@@ -40,6 +40,50 @@ def _count_headings(html: str) -> int:
     return len(re.findall(r"<h[1-6][ >]", html))
 
 
+def _enrich_toc(toc_html: str, body: str) -> str:
+    """Add significant list-items (with links/tags/bold) to the heading-based TOC."""
+    if not toc_html:
+        return toc_html
+
+    # Find heading positions in the body
+    heading_starts = [
+        (m.start(), m.group(2))
+        for m in re.finditer(r'<h([1-6])\s[^>]*id="([^"]*)"[^>]*>', body)
+    ]
+    if not heading_starts:
+        return toc_html
+
+    # For each heading section, collect significant <li> text
+    section_lis: dict[str, list[str]] = {}
+    for i, (start, anchor) in enumerate(heading_starts):
+        end = heading_starts[i + 1][0] if i + 1 < len(heading_starts) else len(body)
+        section = body[start:end]
+        for li_m in re.finditer(r"<li>(.*?)</li>", section, re.DOTALL):
+            inner = li_m.group(1)
+            if re.search(r"<a\s|<span class=\"tag\"|<strong>", inner):
+                text = re.sub(r"<[^>]+>", "", inner).strip()
+                if text:
+                    text = text[:80]
+                    section_lis.setdefault(anchor, []).append(text)
+
+    if not section_lis:
+        return toc_html
+
+    # Insert list-items into the TOC under each heading's entry
+    for anchor, texts in section_lis.items():
+        li_html = "".join(
+            f'<li class="toc-li">· {t}</li>' for t in texts
+        )
+        # Insert a <ul class="toc-links"> right after the heading's anchor link
+        toc_html = re.sub(
+            rf'(<a href="#{re.escape(anchor)}">[^<]*</a>)',
+            rf'\1<ul class="toc-links">{li_html}</ul>',
+            toc_html,
+        )
+
+    return toc_html
+
+
 def render_markdown(md: str, css: str = DEFAULT_CSS, title: str | None = None) -> str:
     """Convert markdown to a self-contained HTML document.
 
@@ -56,7 +100,9 @@ def render_markdown(md: str, css: str = DEFAULT_CSS, title: str | None = None) -
     body = md_inst.convert(md)
     toc_html = getattr(md_inst, "toc", "")
 
-    if toc_html and _count_headings(body) >= 3:
+    heading_count = _count_headings(body)
+    toc_html = _enrich_toc(toc_html, body)
+    if toc_html and heading_count >= 2:
         # Replace the auto-generated "Table of Contents" span with our own
         toc_html = toc_html.replace(
             '<span class="toctitle">Table of Contents</span>',
