@@ -140,4 +140,100 @@ function VaultBrowser.findChain(tree, needle)
     return _find(tree)
 end
 
+local Menu = require("ui/widget/menu")
+local UIManager = require("ui/uimanager")
+local InfoMessage = require("ui/widget/infomessage")
+local _ = require("gettext")
+
+-- Build the flat item_table from the tree, with toolbar items
+function VaultBrowser.buildItemTable(tree)
+    local items = {
+        {
+            text = _("⤿ Collapse all"),
+            type = "toolbar",
+            action = "collapse",
+        },
+        {
+            text = _("⤢ Expand all"),
+            type = "toolbar",
+            action = "expand",
+        },
+        {
+            text = _("◎ Focus current"),
+            type = "toolbar",
+            action = "focus",
+        },
+        {
+            text = _("───────────────────"),
+            type = "separator",
+        },
+    }
+    local tree_items = VaultBrowser.flattenTree(tree)
+    for _, ti in ipairs(tree_items) do
+        table.insert(items, ti)
+    end
+    return items
+end
+
+-- Show the full-screen vault browser dialog
+function VaultBrowser.showBrowser(plugin)
+    local vault_root = plugin.settings:readSetting("vault_root")
+    if not vault_root or vault_root == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("Please set the vault root first (Obsidian Vault → Vault root)."),
+            timeout = 3,
+        })
+        return
+    end
+
+    local tree = VaultBrowser.scanVault(vault_root)
+    local menu
+
+    local function rebuildMenu()
+        menu:switchItemTable(nil, VaultBrowser.buildItemTable(tree), -1)
+    end
+
+    menu = Menu:new{
+        title = _("Vault Browser"),
+        item_table = VaultBrowser.buildItemTable(tree),
+        covers_fullscreen = true,
+        is_borderless = true,
+        width = nil,
+        height = nil,
+        close_callback = function()
+            UIManager:close(menu)
+        end,
+        callback = function(item)
+            if item.action == "collapse" then
+                VaultBrowser.collapseAll(tree)
+                rebuildMenu()
+            elseif item.action == "expand" then
+                VaultBrowser.expandAll(tree)
+                rebuildMenu()
+            elseif item.action == "focus" then
+                local current_file = plugin.ui.document and plugin.ui.document.file
+                if current_file then
+                    local chain = VaultBrowser.findChain(tree, current_file)
+                    if chain then
+                        for _, n in ipairs(chain) do
+                            n.expanded = true
+                        end
+                        rebuildMenu()
+                    else
+                        UIManager:show(InfoMessage:new{ text = _("Current file not in vault."), timeout = 2 })
+                    end
+                end
+            elseif item.type == "directory" then
+                VaultBrowser.toggleNode(tree, item.path)
+                rebuildMenu()
+            elseif item.type == "file" then
+                UIManager:close(menu)
+                plugin.ui:switchDocument(item.path)
+            end
+        end,
+    }
+
+    UIManager:show(menu)
+end
+
 return VaultBrowser

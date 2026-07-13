@@ -95,7 +95,8 @@ function ObsidianPlugin:promptVaultRoot()
 end
 
 function ObsidianPlugin:openVaultBrowser()
-    UIManager:show(InfoMessage:new{ text = _("Vault browser coming in Task 3/4.") })
+    local VaultBrowser = require("vaultbrowser")
+    VaultBrowser.showBrowser(self)
 end
 
 function ObsidianPlugin:goBack()
