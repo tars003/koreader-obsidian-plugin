@@ -4,6 +4,8 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local LuaSettings = require("luasettings")
 local DataStorage = require("datastorage")
+local LinkHandler = require("linkhandler")
+local T = require("ffi/util").template
 local _ = require("gettext")
 
 local ObsidianPlugin = WidgetContainer:extend{
@@ -64,7 +66,32 @@ function ObsidianPlugin:addToMainMenu(menu_items)
 end
 
 function ObsidianPlugin:promptVaultRoot()
-    UIManager:show(InfoMessage:new{ text = _("Vault root setting will prompt for path (Task 2).") })
+    local InputDialog = require("ui/widget/inputdialog")
+    local input_dialog
+    input_dialog = InputDialog:new{
+        title = _("Vault root path"),
+        input = self.settings:readSetting("vault_root") or "",
+        input_hint = _("/mnt/us/vault.kindle"),
+        buttons = {{
+            {
+                text = _("Cancel"),
+                callback = function()
+                    UIManager:close(input_dialog)
+                end,
+            },
+            {
+                text = _("OK"),
+                callback = function()
+                    local val = input_dialog:getInputText()
+                    self.settings:saveSetting("vault_root", val)
+                    self:saveSettings()
+                    UIManager:close(input_dialog)
+                end,
+            },
+        }},
+    }
+    UIManager:show(input_dialog)
+    input_dialog:onShowKeyboard()
 end
 
 function ObsidianPlugin:openVaultBrowser()
@@ -83,7 +110,7 @@ function ObsidianPlugin:clearBackStack()
 end
 
 function ObsidianPlugin:initLinkHandler()
-    -- Task 2 wires this
+    LinkHandler.install(self)
 end
 
 function ObsidianPlugin:onFlushSettings()
