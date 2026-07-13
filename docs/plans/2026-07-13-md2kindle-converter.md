@@ -471,11 +471,6 @@ def posix_dir(rel: str) -> str:
     return "/".join(rel.split("/")[:-1])
 
 
-def _choose(target_html_rel: str, anchor: str | None, text: str | None) -> ResolveResult:
-    href = _rel_href("__src__", target_html_rel)  # placeholder, overwritten by caller
-    raise NotImplementedError  # replaced below
-
-
 def resolve(target: str, idx: NoteIndex, src_relpath: str) -> ResolveResult:
     # 1. split alias
     if "|" in target:
@@ -530,7 +525,7 @@ def resolve(target: str, idx: NoteIndex, src_relpath: str) -> ResolveResult:
     return ResolveResult(href=href, text=display, broken=False)
 ```
 
-> Note: delete the throwaway `_choose` stub above; it is unused. Keep only `resolve`, `build_index`, `_rel_href`, `posix_dir`, the dataclasses, and the `slugify` import.
+> Implementation note: implement `resolve`, `build_index`, `_rel_href`, `posix_dir`, the dataclasses, and the `slugify` import.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1171,7 +1166,7 @@ from md2kindle.config import Config, ImageOptions
 from md2kindle.pipeline import sync
 
 
-def _cfg(tmp_path, transport):
+def _cfg(tmp_path):
     in_dir = tmp_path / "in"
     out_dir = tmp_path / "out"
     in_dir.mkdir()
@@ -1180,38 +1175,28 @@ def _cfg(tmp_path, transport):
     return cfg, in_dir, out_dir
 
 
-def test_sync_converts_markdown_and_rewrites_wikilink(tmp_path, fake_remote_transport, monkeypatch):
-    cfg, in_dir, out_dir = _cfg(tmp_path, fake_remote_transport)
+def test_sync_converts_markdown_and_rewrites_wikilink(tmp_path, fake_remote_transport):
+    cfg, in_dir, out_dir = _cfg(tmp_path)
     (in_dir / "a.md").write_text("# A\nLink to [[b]] and ![img](https://x/i.png)\n", encoding="utf-8")
     (in_dir / "b.md").write_text("# B\n", encoding="utf-8")
-
-    # force the pipeline's ImageCache to use the mock transport
-    from md2kindle import images as images_mod
-    monkeypatch.setattr(images_mod.ImageCache, "__init__",
-                        lambda self, assets, out, in_d, opts, m, **kw: images_mod.ImageCache.__init_orig__(
-                            self, assets, out, in_d, opts, m, transport=fake_remote_transport))
-    # simpler: patch _fetch_remote via module is messy; instead inject transport through env-free path:
-    monkeypatch.setattr(images_mod, "_fetch_remote",
-                        lambda url, opts, transport=None: (None, "patched") if False else _read(png_for_test(url)))
-
-    summary = sync(cfg, log=lambda *_: None)
+    summary = sync(cfg, log=lambda *_: None, transport=fake_remote_transport)
     assert summary.total == 2 and summary.converted == 2
     a = (out_dir / "a.html").read_text(encoding="utf-8")
     assert 'href="b.html"' in a
-    assert "assets/" in a  # image rewritten
+    assert "assets/" in a
     assert "[[b]]" not in a
 
 
-def test_sync_is_idempotent_second_run_no_conversions(tmp_path, fake_remote_transport, monkeypatch):
-    cfg, in_dir, out_dir = _cfg(tmp_path, fake_remote_transport)
+def test_sync_is_idempotent_second_run_no_conversions(tmp_path):
+    cfg, in_dir, out_dir = _cfg(tmp_path)
     (in_dir / "a.md").write_text("# A\n", encoding="utf-8")
     sync(cfg, log=lambda *_: None)
     s2 = sync(cfg, log=lambda *_: None)
     assert s2.converted == 0
 
 
-def test_sync_removes_orphan_output(tmp_path, fake_remote_transport, monkeypatch):
-    cfg, in_dir, out_dir = _cfg(tmp_path, fake_remote_transport)
+def test_sync_removes_orphan_output(tmp_path):
+    cfg, in_dir, out_dir = _cfg(tmp_path)
     (in_dir / "a.md").write_text("# A\n", encoding="utf-8")
     sync(cfg, log=lambda *_: None)
     (in_dir / "a.md").unlink()
@@ -1220,8 +1205,8 @@ def test_sync_removes_orphan_output(tmp_path, fake_remote_transport, monkeypatch
     assert not (out_dir / "a.html").exists()
 
 
-def test_sync_excludes_obsidian_folder(tmp_path, fake_remote_transport):
-    cfg, in_dir, out_dir = _cfg(tmp_path, fake_remote_transport)
+def test_sync_excludes_obsidian_folder(tmp_path):
+    cfg, in_dir, out_dir = _cfg(tmp_path)
     (in_dir / ".obsidian").mkdir()
     (in_dir / ".obsidian" / "app.json").write_text("{}", encoding="utf-8")
     (in_dir / "keep.md").write_text("# K\n", encoding="utf-8")
@@ -1229,8 +1214,6 @@ def test_sync_excludes_obsidian_folder(tmp_path, fake_remote_transport):
     assert s.total == 1
     assert not (out_dir / ".obsidian").exists()
 ```
-
-> The transport-injection in `test_sync_converts_markdown_and_rewrites_wikilink` is awkward. **Cleaner approach (use this instead):** add an optional `transport` parameter to `sync(cfg, log=print, transport=None)` and pass it into `ImageCache`. Replace that test's monkeypatching with `sync(cfg, log=..., transport=fake_remote_transport)`. Apply this in Step 3.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1275,11 +1258,6 @@ def scan_markdown(root: Path, exclude: list[str]) -> list[str]:
     return rels
 
 
-def _excluded(rel: str, exclude: list[str]) -> bool:
-    name = Path(rel).name
-    return any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat) for pat in exclude)
-
-
 def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
     manifest_path = cfg.output_dir / "assets" / ".md2kindle" / "manifest.json"
     manifest = Manifest.load(manifest_path)
@@ -1320,21 +1298,6 @@ def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
 
     manifest.save()
     return SyncSummary(converted, images_failed, orphans, len(sources))
-```
-
-Also revise the awkward test from Step 1 to use the `transport=` parameter:
-
-```python
-def test_sync_converts_markdown_and_rewrites_wikilink(tmp_path, fake_remote_transport):
-    cfg, in_dir, out_dir = _cfg(tmp_path, fake_remote_transport)
-    (in_dir / "a.md").write_text("# A\nLink to [[b]] and ![img](https://x/i.png)\n", encoding="utf-8")
-    (in_dir / "b.md").write_text("# B\n", encoding="utf-8")
-    summary = sync(cfg, log=lambda *_: None, transport=fake_remote_transport)
-    assert summary.total == 2 and summary.converted == 2
-    a = (out_dir / "a.html").read_text(encoding="utf-8")
-    assert 'href="b.html"' in a
-    assert "assets/" in a
-    assert "[[b]]" not in a
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1503,7 +1466,7 @@ git commit -m "feat(converter): CLI entrypoint + integration test + README"
 - MD→HTML + CSS (§6.6): Task 5 with extensions and `DEFAULT_CSS`. ✅
 - Config (§6.7): Task 1. ✅
 
-**2. Placeholder scan:** One intentional revision noted inline in Task 8 (replace the awkward transport-injection test with the `transport=` parameter, which the implementation already supports). No TBD/TODO/"handle edge cases" stubs remain. ✅
+**2. Placeholder scan:** No TBD/TODO/"handle edge cases"/"implement later" stubs. Task 8's image-transport test uses the `transport=` parameter directly (no monkeypatching). ✅
 
 **3. Type/name consistency:** `ImageCache.__init__(assets_dir, output_root, input_dir, opts, manifest, *, transport=None)` matches across Task 6 test, Task 6 impl, and Task 8 pipeline call. `process_html(html, src_relpath) -> tuple[str, int]` consistent. `resolve(target, idx, src_relpath)` consistent (Task 3 def, Task 4 use). `SyncSummary(converted, images_failed, orphans_removed, total)` consistent (Task 8 def, Task 9 use). `Config(input_dir, output_dir, exclude, image)` consistent throughout. ✅
 
