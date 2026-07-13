@@ -111,6 +111,7 @@ class ImageCache:
             entry = self.manifest.get_image(src)
             if entry and not entry.get("failed") and entry.get("file"):
                 return Path(entry["file"]).name
+            print(f"  ↡ {src}", flush=True)
             data, _err = _fetch_remote(src, self.opts, self.transport)
             if data is None:
                 self.manifest.set_image(src, None, None, True)

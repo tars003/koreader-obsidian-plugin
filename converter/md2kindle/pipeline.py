@@ -43,13 +43,15 @@ def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
     )
 
     converted = images_failed = 0
-    for rel in sources:
+    total = len(sources)
+    for i, rel in enumerate(sources, 1):
         src = cfg.input_dir / rel
         h = hash_file(src)
         prev = manifest.get_source(rel)
         if prev and prev["hash"] == h and not prev.get("had_failures"):
             continue  # unchanged and no pending image retries
 
+        print(f"[{i}/{total}] {rel}", flush=True)
         md = strip_frontmatter(src.read_text(encoding="utf-8"))
         md = preprocess(md, rel, idx, log)
         html = render_markdown(md)
