@@ -74,10 +74,11 @@ def _enrich_toc(toc_html: str, body: str) -> str:
         li_html = "".join(
             f'<li class="toc-li">· {t}</li>' for t in texts
         )
-        # Insert a <ul class="toc-links"> right after the heading's anchor link
+        # Insert a <ul class="toc-links"> right after the heading's anchor link.
+        # Use a lambda so the replacement string isn't processed for escape sequences.
         toc_html = re.sub(
             rf'(<a href="#{re.escape(anchor)}">[^<]*</a>)',
-            rf'\1<ul class="toc-links">{li_html}</ul>',
+            lambda m, _li=li_html: m.group(0) + f'<ul class="toc-links">{_li}</ul>',
             toc_html,
         )
 
