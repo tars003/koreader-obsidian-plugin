@@ -150,26 +150,30 @@ function VaultBrowser.buildItemTable(tree)
     local items = {
         {
             text = _("⤿ Collapse all"),
-            type = "toolbar",
             action = "collapse",
+            keep_menu_open = true,
         },
         {
             text = _("⤢ Expand all"),
-            type = "toolbar",
             action = "expand",
+            keep_menu_open = true,
         },
         {
             text = _("◎ Focus current"),
-            type = "toolbar",
             action = "focus",
+            keep_menu_open = true,
         },
         {
             text = _("───────────────────"),
-            type = "separator",
+            keep_menu_open = true,
+            enabled_func = function() return false end,
         },
     }
     local tree_items = VaultBrowser.flattenTree(tree)
     for _, ti in ipairs(tree_items) do
+        if ti.type == "directory" then
+            ti.keep_menu_open = true
+        end
         table.insert(items, ti)
     end
     return items
