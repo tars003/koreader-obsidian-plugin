@@ -90,3 +90,20 @@ def test_corrupt_image_bytes_fail_soft(tmp_path):
     assert failed == 1
     assert "[image unavailable: https://x/a.png]" in html
     assert m.get_image("https://x/a.png")["failed"] is True
+
+
+def test_transparent_png_composites_to_white(tmp_path):
+    # a fully-transparent RGBA PNG: transparent areas must composite onto white
+    # (not become black) before grayscale conversion
+    cache, in_root, _ = _cache(tmp_path)
+    buf = io.BytesIO()
+    Image.new("RGBA", (50, 50), (0, 0, 0, 0)).save(buf, format="PNG")
+    (in_root / "trans.png").write_bytes(buf.getvalue())
+
+    html, failed = cache.process_html('<img src="trans.png">', "note.md")
+    assert failed == 0
+    files = list((tmp_path / "assets").glob("*.jpg"))
+    assert len(files) == 1
+    im = Image.open(files[0])
+    assert im.mode == "L"  # grayscale (cfg has grayscale=True)
+    assert im.getpixel((10, 10)) == 255  # transparent area -> white, not black

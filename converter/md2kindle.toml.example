@@ -1,4 +1,6 @@
 [vault]
+# Use forward slashes in paths (e.g. C:/Users/me/vault): TOML treats
+# backslashes as escape characters.
 input_dir = "vault"
 output_dir = "vault.kindle"
 

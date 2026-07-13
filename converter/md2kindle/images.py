@@ -27,10 +27,14 @@ def _rel_href(src_dir: str, target_rel: str) -> str:
 def _optimize(data: bytes, opts: ImageOptions) -> bytes:
     im = Image.open(io.BytesIO(data))
     im.load()
+    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+        bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        bg.alpha_composite(im.convert("RGBA"))
+        im = bg.convert("RGB")
+    elif im.mode != "L":
+        im = im.convert("RGB")
     if opts.grayscale:
         im = im.convert("L")
-    elif im.mode not in ("RGB", "L"):
-        im = im.convert("RGB")
     if opts.max_width and im.width > opts.max_width:
         new_h = int(im.height * (opts.max_width / im.width))
         im = im.resize((opts.max_width, new_h))

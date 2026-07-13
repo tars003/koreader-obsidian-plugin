@@ -70,5 +70,6 @@ def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
                 orphans += 1
             manifest.remove_source(rel)
 
-    manifest.save()
+    if manifest.dirty:
+        manifest.save()
     return SyncSummary(converted, images_failed, orphans, len(sources))

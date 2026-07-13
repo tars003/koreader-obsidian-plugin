@@ -18,6 +18,8 @@ cp md2kindle.toml.example md2kindle.toml   # then edit input_dir / output_dir
 python -m md2kindle sync --config md2kindle.toml
 ```
 
+> **Windows paths:** In `md2kindle.toml`, use **forward slashes** in paths (e.g. `C:/Users/me/vault`) — TOML treats backslashes as escape characters.
+
 ## Automate (Windows Task Scheduler)
 
 Run `python -m md2kindle sync --config <path>` every ~5 minutes.

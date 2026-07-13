@@ -51,3 +51,18 @@ def test_broken_link_when_no_match():
     assert r.broken is True
     assert r.href is None
     assert r.text == "nope"
+
+
+def test_top_level_source_resolves():
+    # a wikilink resolved FROM a top-level note (no directory component) must
+    # produce a correct relative href: the empty-`start` relpath case.
+    idx = _idx()
+    r = resolve("idea", idx, "root.md")
+    assert r.broken is False
+    assert r.href == "Notes/Inbox/idea.html"
+    assert r.text == "idea"
+    # top-level target from a top-level source resolves to a bare filename
+    idx2 = build_index(["root.md", "idea.md"])
+    r2 = resolve("idea", idx2, "root.md")
+    assert r2.broken is False
+    assert r2.href == "idea.html"

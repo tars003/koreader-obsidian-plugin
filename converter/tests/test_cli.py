@@ -10,7 +10,7 @@ def test_cli_sync_runs_and_exits_zero(tmp_path):
     (in_dir / "hello.md").write_text("# Hello\n", encoding="utf-8")
     toml = tmp_path / "md2kindle.toml"
     toml.write_text(
-        f'[vault]\ninput_dir = "{in_dir}"\noutput_dir = "{out_dir}"\n', encoding="utf-8"
+        f'[vault]\ninput_dir = "{in_dir.as_posix()}"\noutput_dir = "{out_dir.as_posix()}"\n', encoding="utf-8"
     )
 
     result = subprocess.run(

@@ -1,4 +1,5 @@
 from md2kindle.config import Config, ImageOptions
+from md2kindle.manifest import Manifest
 from md2kindle.pipeline import sync
 
 
@@ -49,3 +50,20 @@ def test_sync_excludes_obsidian_folder(tmp_path):
     s = sync(cfg, log=lambda *_: None)
     assert s.total == 1
     assert not (out_dir / ".obsidian").exists()
+
+
+def test_noop_pass_does_not_save_manifest(tmp_path, monkeypatch):
+    cfg, in_dir, out_dir = _cfg(tmp_path)
+    (in_dir / "a.md").write_text("# A\n", encoding="utf-8")
+    # first pass: performs writes -> manifest.save() is invoked
+    sync(cfg, log=lambda *_: None)
+
+    calls = {"count": 0}
+
+    def counting_save(self):
+        calls["count"] += 1
+
+    monkeypatch.setattr(Manifest, "save", counting_save)
+    # second pass: nothing changed -> no source converted, no orphan removed
+    sync(cfg, log=lambda *_: None)
+    assert calls["count"] == 0

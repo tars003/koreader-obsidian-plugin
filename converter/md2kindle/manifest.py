@@ -22,6 +22,7 @@ class Manifest:
         self.path = path
         self.sources: dict[str, dict] = {}
         self.images: dict[str, dict] = {}
+        self.dirty = False
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":
@@ -46,15 +47,18 @@ class Manifest:
 
     def set_source(self, rel: str, h: str, output: str, had_failures: bool = False) -> None:
         self.sources[rel] = {"hash": h, "output": output, "had_failures": had_failures}
+        self.dirty = True
 
     def get_image(self, url: str) -> dict | None:
         return self.images.get(url)
 
     def set_image(self, url: str, h: str | None, file: str | None, failed: bool) -> None:
         self.images[url] = {"hash": h, "file": file, "failed": failed}
+        self.dirty = True
 
     def known_sources(self) -> set[str]:
         return set(self.sources)
 
     def remove_source(self, rel: str) -> None:
         self.sources.pop(rel, None)
+        self.dirty = True
