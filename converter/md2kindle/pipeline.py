@@ -54,7 +54,7 @@ def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
         print(f"[{i}/{total}] {rel}", flush=True)
         md = strip_frontmatter(src.read_text(encoding="utf-8"))
         md = preprocess(md, rel, idx, log)
-        html = render_markdown(md)
+        html = render_markdown(md, title=Path(rel).stem)
         html, n_fail = cache.process_html(html, rel)
 
         out_rel = write_html(cfg.output_dir, rel, html)

@@ -62,6 +62,26 @@ def test_broken_link_is_logged():
     assert msgs and "ghost" in msgs[0][0]
 
 
+def test_tag_wrapped_in_span():
+    out = preprocess("#read this", "Notes/other.md", IDX, log=lambda *_: None)
+    assert '<span class="tag">#read</span>' in out
+
+
+def test_tag_not_matched_in_heading():
+    out = preprocess("# Heading text", "Notes/other.md", IDX, log=lambda *_: None)
+    assert "<span class" not in out  # no tag wrapping for heading markers
+
+
+def test_highlight_converted_to_mark():
+    out = preprocess("==important text== end", "Notes/other.md", IDX, log=lambda *_: None)
+    assert "<mark>important text</mark>" in out
+
+
+def test_highlight_with_color_ignores_color():
+    out = preprocess("=={green}colored text== end", "Notes/other.md", IDX, log=lambda *_: None)
+    assert "<mark>colored text</mark>" in out
+
+
 def test_wikilink_not_rewritten_inside_html_comment():
     out = preprocess("a <!-- [[idea]] --> b", "Notes/other.md", IDX, log=lambda *_: None)
     assert "[idea](idea.html)" not in out

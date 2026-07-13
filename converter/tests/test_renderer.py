@@ -18,3 +18,14 @@ def test_renders_image_tag():
     html = render_markdown("![alt](photo.png)\n")
     assert 'src="photo.png"' in html
     assert 'alt="alt"' in html
+
+
+def test_title_fallback_prepends_h1():
+    html = render_markdown("just text\n", title="MyNote")
+    assert "<h1 id=\"mynote\">MyNote</h1>" in html
+
+
+def test_toc_injected_with_3_plus_headings():
+    md = "# A\n\n## B\n\n### C\n\ntext\n"
+    html = render_markdown(md)
+    assert 'class="toc"' in html

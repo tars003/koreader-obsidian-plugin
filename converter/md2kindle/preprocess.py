@@ -56,9 +56,25 @@ def _rewrite_line(line: str, src_relpath: str, idx: NoteIndex, log) -> str:
     return "".join(parts)
 
 
+_TAG_RE = re.compile(r'(?<!\S)#([\w/-]+)')
+_HIGHLIGHT_RE = re.compile(r'==(?:\{([^}]*)\})?(.+?)==')
+
+
+def _rewrite_tags(text: str) -> str:
+    """Wrap #tag in a styled span."""
+    return _TAG_RE.sub(r'<span class="tag">#\1</span>', text)
+
+
+def _rewrite_highlights(text: str) -> str:
+    """Convert ==text== (with optional {color}) to <mark>."""
+    return _HIGHLIGHT_RE.sub(r'<mark>\2</mark>', text)
+
+
 def _rewrite_text(text: str, src_relpath: str, idx: NoteIndex, log) -> str:
     text = _WIKI_RE.sub(lambda m: _handle(m, src_relpath, idx, log), text)
     text = _MD_LINK_RE.sub(_rewrite_md_link, text)
+    text = _rewrite_tags(text)
+    text = _rewrite_highlights(text)
     return text
 
 
