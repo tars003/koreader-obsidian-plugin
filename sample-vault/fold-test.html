@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: serif; line-height: 1.5; margin: 4%; }
+summary { font-size: 1.2em; font-weight: bold; margin: 0.5em 0; cursor: pointer; }
+summary h2, summary h3, summary h4 { display: inline; font-size: inherit; }
+h1 { border-bottom: 1px solid #888; padding-bottom: 0.2em; }
+details { margin: 0.3em 0; }
+details details { margin-left: 1em; }  /* nested sections indented */
+p { margin: 0.3em 0; }
+</style>
+</head>
+<body>
+
+<h1>Fold Test</h1>
+<p>Tap any heading below. If KOReader supports &lt;details&gt;, the section should collapse/expand.</p>
+
+<details open>
+  <summary>▾ Section 1 — Foldable heading (tap me)</summary>
+  <p>This is content under Section 1. It should disappear when you tap the heading above.</p>
+  <p>More content here. This should also be hidden when collapsed.</p>
+</details>
+
+<details open>
+  <summary>▾ Section 2 — With nested sub-sections</summary>
+  <p>Top-level content under Section 2.</p>
+
+  <details open>
+    <summary>▸ Sub-section 2.1 (tap me too)</summary>
+    <p>Nested content under 2.1.</p>
+    <p>This should collapse independently from its parent.</p>
+  </details>
+
+  <details open>
+    <summary>▸ Sub-section 2.2</summary>
+    <p>Another nested section.</p>
+  </details>
+</details>
+
+<details open>
+  <summary>▾ Section 3 — Plain section</summary>
+  <p>Just some text.</p>
+</details>
+
+</body>
+</html>
