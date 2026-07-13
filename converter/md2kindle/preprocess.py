@@ -21,6 +21,9 @@ def strip_frontmatter(md: str) -> str:
 
 
 def preprocess(md: str, src_relpath: str, idx: NoteIndex, log) -> str:
+    # Strip HTML comments first so wikilinks inside them are never rewritten
+    # (single- and multi-line comments are both covered by DOTALL).
+    md = re.sub(r"<!--.*?-->", "", md, flags=re.DOTALL)
     out: list[str] = []
     in_fence = False
     fence = None

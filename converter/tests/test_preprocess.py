@@ -60,3 +60,16 @@ def test_broken_link_is_logged():
     msgs = []
     preprocess("[[ghost]]", "Notes/other.md", IDX, log=lambda *a: msgs.append(a))
     assert msgs and "ghost" in msgs[0][0]
+
+
+def test_wikilink_not_rewritten_inside_html_comment():
+    out = preprocess("a <!-- [[idea]] --> b", "Notes/other.md", IDX, log=lambda *_: None)
+    assert "[idea](idea.html)" not in out
+    assert "[[idea]]" not in out
+
+
+def test_wikilink_not_rewritten_inside_multiline_html_comment():
+    md = "x\n<!--\n[[idea]]\n-->\ny"
+    out = preprocess(md, "Notes/other.md", IDX, log=lambda *_: None)
+    assert "[idea](idea.html)" not in out
+    assert "[[idea]]" not in out
