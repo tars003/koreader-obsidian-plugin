@@ -56,6 +56,8 @@ def _enrich_toc(toc_html: str, body: str) -> str:
     # For each heading section, collect significant <li> text
     section_lis: dict[str, list[str]] = {}
     for i, (start, anchor) in enumerate(heading_starts):
+        if not anchor:  # skip headings without an id (shouldn't happen)
+            continue
         end = heading_starts[i + 1][0] if i + 1 < len(heading_starts) else len(body)
         section = body[start:end]
         for li_m in re.finditer(r"<li>(.*?)</li>", section, re.DOTALL):
@@ -102,7 +104,10 @@ def render_markdown(md: str, css: str = DEFAULT_CSS, title: str | None = None) -
     toc_html = getattr(md_inst, "toc", "")
 
     heading_count = _count_headings(body)
-    toc_html = _enrich_toc(toc_html, body)
+    try:
+        toc_html = _enrich_toc(toc_html, body)
+    except Exception:
+        pass  # enrichment failed — use heading-only TOC
     if toc_html and heading_count >= 2:
         # Replace the auto-generated "Table of Contents" span with our own
         toc_html = toc_html.replace(
