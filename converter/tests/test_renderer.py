@@ -20,9 +20,10 @@ def test_renders_image_tag():
     assert 'alt="alt"' in html
 
 
-def test_title_fallback_prepends_h1():
+def test_title_fallback_prepends_title_div():
     html = render_markdown("just text\n", title="MyNote")
-    assert "<h1 id=\"mynote\">MyNote</h1>" in html
+    assert '<div class="note-title">MyNote</div>' in html
+    assert '<h1 ' not in html  # title is a div, NOT an h1 — preserves heading levels
 
 
 def test_toc_injected_with_3_plus_headings():

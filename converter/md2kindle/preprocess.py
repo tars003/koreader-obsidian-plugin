@@ -45,7 +45,7 @@ def preprocess(md: str, src_relpath: str, idx: NoteIndex, log) -> str:
 
 
 def _rewrite_line(line: str, src_relpath: str, idx: NoteIndex, log) -> str:
-    # Protect inline code spans, rewrite the rest, then restore.
+    # Process each segment outside inline code
     parts: list[str] = []
     pos = 0
     for m in _INLINE_CODE_RE.finditer(line):
@@ -53,7 +53,8 @@ def _rewrite_line(line: str, src_relpath: str, idx: NoteIndex, log) -> str:
         parts.append(m.group(0))
         pos = m.end()
     parts.append(_rewrite_text(line[pos:], src_relpath, idx, log))
-    return "".join(parts)
+    # Reassemble, then apply highlights — this lets ==…== span across code segments
+    return _rewrite_highlights("".join(parts))
 
 
 _TAG_RE = re.compile(r'(?<!\S)#([\w/-]+)')
@@ -74,7 +75,6 @@ def _rewrite_text(text: str, src_relpath: str, idx: NoteIndex, log) -> str:
     text = _WIKI_RE.sub(lambda m: _handle(m, src_relpath, idx, log), text)
     text = _MD_LINK_RE.sub(_rewrite_md_link, text)
     text = _rewrite_tags(text)
-    text = _rewrite_highlights(text)
     return text
 
 

@@ -109,6 +109,9 @@ function ObsidianPlugin:goBack()
     if #self.back_stack > 0 then
         local previous = table.remove(self.back_stack)
         self.ui:switchDocument(previous)
+    elseif self.ui.document then
+        -- Back-stack empty and a document is open — close it to return to file manager
+        self.ui:onCloseDocument()
     end
 end
 
