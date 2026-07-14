@@ -40,6 +40,11 @@ function ObsidianPlugin:saveSettings()
 end
 
 function ObsidianPlugin:addToMainMenu(menu_items)
+    -- Install link handler in reader context (init only runs in FM since is_doc_only=false)
+    if self.ui.document and not self._link_handler_installed then
+        self:initLinkHandler()
+        self._link_handler_installed = true
+    end
     local vault_root_text = self.settings:readSetting("vault_root") or _("(not set)")
     menu_items.obsidian = {
         text = _("Obsidian Vault"),
@@ -129,6 +134,7 @@ end
 
 function ObsidianPlugin:onCloseDocument()
     self:clearBackStack()
+    self._link_handler_installed = false
 end
 
 return ObsidianPlugin

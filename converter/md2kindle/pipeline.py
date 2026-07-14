@@ -32,6 +32,39 @@ def scan_markdown(root: Path, exclude: list[str]) -> list[str]:
     return rels
 
 
+def _is_excluded(rel: str, exclude: list[str]) -> bool:
+    name = Path(rel).name
+    return any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat) for pat in exclude)
+
+
+def _promote_lists(md: str) -> str:
+    """Convert list items to headings so KOReader's native TOC sees them.
+
+    Uppermost list items become ``##`` (h2), each 2-space indent adds one ``#`` level.
+    """
+    import re
+    result: list[str] = []
+    in_fence = False
+    for line in md.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            result.append(line)
+            continue
+        if in_fence:
+            result.append(line)
+            continue
+        m = re.match(r'^(\s*)([-*]|\d+\.)\s+', line)
+        if m:
+            indent = len(m.group(1))
+            rest = line[m.end():]
+            level = min(2 + (indent // 2), 6)  # 0-indent → ##, 2sp → ###, etc.
+            result.append(f'{"#" * level} {rest}')
+        else:
+            result.append(line)
+    return "".join(result)
+
+
 def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
     manifest_path = cfg.output_dir / "assets" / ".md2kindle" / "manifest.json"
     manifest = Manifest.load(manifest_path)
@@ -53,8 +86,11 @@ def sync(cfg: Config, log=print, *, transport=None) -> SyncSummary:
 
         print(f"[{i}/{total}] {rel}", flush=True)
         md = strip_frontmatter(src.read_text(encoding="utf-8"))
+        # For non-excluded files, promote list items to headings (visible in KOReader's native TOC)
+        if not _is_excluded(rel, cfg.exclude):
+            md = _promote_lists(md)
         md = preprocess(md, rel, idx, log)
-        html = render_markdown(md, title=Path(rel).stem)
+        html = render_markdown(md, title=Path(rel).stem, promoted=not _is_excluded(rel, cfg.exclude))
         html, n_fail = cache.process_html(html, rel)
 
         out_rel = write_html(cfg.output_dir, rel, html)

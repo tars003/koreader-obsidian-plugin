@@ -10,9 +10,16 @@ local function listDirSorted(dir_path)
     for name in lfs.dir(dir_path) do
         if name ~= "." and name ~= ".." and name ~= "assets" then
             local full = ffiUtil.joinPath(dir_path, name)
-            local attr = lfs.attributes(full)
-            -- lfs.attributes can return nil on FAT32; fall back to extension check
-            local mode = (attr and attr.mode) or (name:match("%.html?$") and "file")
+            local mode = lfs.attributes(full, "mode")
+            if not mode then
+                -- lfs.attributes can fail on Kindle FAT32; try directory probe
+                local is_dir = pcall(function() for _ in lfs.dir(full) do return true end end)
+                if is_dir then
+                    mode = "directory"
+                elseif name:match("%.html?$") then
+                    mode = "file"
+                end
+            end
             if mode then
                 table.insert(entries, {name = name, path = full, mode = mode})
             end
