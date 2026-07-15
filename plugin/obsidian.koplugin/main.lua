@@ -125,7 +125,9 @@ function ObsidianPlugin:clearBackStack()
 end
 
 function ObsidianPlugin:initLinkHandler()
+    if self._link_handler_installed then return end
     LinkHandler.install(self)
+    self._link_handler_installed = true
 end
 
 function ObsidianPlugin:onFlushSettings()
@@ -135,6 +137,11 @@ end
 function ObsidianPlugin:onCloseDocument()
     self:clearBackStack()
     self._link_handler_installed = false
+end
+
+function ObsidianPlugin:onOpenDocument()
+    -- Install link handler as soon as a document opens (not just when menu is opened)
+    self:initLinkHandler()
 end
 
 return ObsidianPlugin
