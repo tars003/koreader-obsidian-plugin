@@ -44,11 +44,17 @@ def _optimize(data: bytes, opts: ImageOptions) -> bytes:
 
 
 def _fetch_remote(url: str, opts: ImageOptions, transport=None):
+    import time as _time
+    print(f"    ↡ {url[:80]}{'...' if len(url) > 80 else ''}", flush=True)
     client_kwargs = {"timeout": opts.timeout, "follow_redirects": True}
     if transport is not None:
         client_kwargs["transport"] = transport
+    # Hard cap: total time across all retries is at most timeout * (retries + 1)
+    deadline = _time.monotonic() + opts.timeout * (opts.retries + 1)
     last = None
     for attempt in range(opts.retries + 1):
+        if _time.monotonic() > deadline:
+            return None, "overall timeout"
         try:
             with httpx.Client(**client_kwargs) as c:
                 r = c.get(url)
@@ -58,8 +64,8 @@ def _fetch_remote(url: str, opts: ImageOptions, transport=None):
             return r.content, None
         except Exception as e:  # noqa: BLE001
             last = e
-            if attempt < opts.retries:
-                time.sleep(0.5 * (2 ** attempt))
+            if attempt < opts.retries and _time.monotonic() < deadline:
+                time.sleep(min(0.5 * (2 ** attempt), deadline - _time.monotonic()))
     return None, str(last)
 
 
