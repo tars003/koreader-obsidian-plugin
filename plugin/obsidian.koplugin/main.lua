@@ -160,6 +160,7 @@ function ObsidianPlugin:dumpDebug()
     if f then
         f:write("\n=== debug " .. os.date() .. " ===\n")
         f:write("vault_root: " .. tostring(self.settings:readSetting("vault_root")) .. "\n")
+        f:write("ui.document.file: " .. tostring(self.ui.document and self.ui.document.file) .. "\n")
         f:write("back_stack length: " .. tostring(#self.back_stack) .. "\n")
         f:write("back_stack contents:\n")
         for i, v in ipairs(self.back_stack) do
@@ -168,6 +169,14 @@ function ObsidianPlugin:dumpDebug()
         f:write("link_handler_installed: " .. tostring(self._link_handler_installed) .. "\n")
         f:write("ui.document: " .. tostring(self.ui.document) .. "\n")
         f:write("ui.link: " .. tostring(self.ui and self.ui.link) .. "\n")
+        f:close()
+    end
+end
+
+function ObsidianPlugin:logLinkEvent(event, details)
+    local f = io.open("/mnt/us/koreader/obsidian-debug.log", "a")
+    if f then
+        f:write("[" .. os.date("%H:%M:%S") .. "] " .. event .. " " .. tostring(details or "") .. "\n")
         f:close()
     end
 end

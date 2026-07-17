@@ -42,16 +42,23 @@ function LinkHandler.install(plugin)
 
     local vault_root = plugin.settings:readSetting("vault_root") or ""
 
+    local function log(msg)
+        if plugin.logLinkEvent then
+            plugin:logLinkEvent("link", msg)
+        end
+    end
+
     -- Try registering the empty scheme (for newer KOReader that supports it)
-    -- Use pcall so this is safe on older versions
-    pcall(function() link:registerScheme("") end)
+    local reg_ok, reg_err = pcall(function() link:registerScheme("") end)
+    log("registerScheme empty: " .. tostring(reg_ok) .. (reg_err and (" err=" .. tostring(reg_err)) or ""))
 
     -- WRAPPER 1: onGoToExternalLink (for newer KOReader with registerScheme)
-    -- Only fire if it's a relative link to a .html file
     local orig_onGoToExternalLink = link.onGoToExternalLink
     function link:onGoToExternalLink(link_url)
+        log("onGoToExternalLink url=" .. tostring(link_url))
         if not link_url:match("^%w[%w+%-.]*:") and vault_root ~= "" then
             local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
+            log("  resolveTarget -> " .. tostring(target))
             if target then
                 table.insert(plugin.back_stack, plugin.ui.document.file)
                 plugin.ui:switchDocument(target)
@@ -62,13 +69,13 @@ function LinkHandler.install(plugin)
     end
 
     -- WRAPPER 2: openFileFromLink (for older KOReader / fallback)
-    -- Relative file links go through this method. Push to back stack before opening.
     local orig_openFileFromLink = link.openFileFromLink
     function link:openFileFromLink(link_url)
+        log("openFileFromLink url=" .. tostring(link_url))
         if not link_url:match("^%w[%w+%-.]*:") and vault_root ~= "" then
             local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
+            log("  resolveTarget -> " .. tostring(target))
             if target then
-                -- Push to back stack so "Go back" works
                 table.insert(plugin.back_stack, plugin.ui.document.file)
             end
         end
