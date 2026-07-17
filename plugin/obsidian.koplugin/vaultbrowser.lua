@@ -158,33 +158,73 @@ local InfoMessage = require("ui/widget/infomessage")
 local _ = require("gettext")
 
 -- Build the flat item_table from the tree, with toolbar items
-function VaultBrowser.buildItemTable(tree)
-    local items = {
-        {
-            text = _("⤿ Collapse all"),
-            action = "collapse",
-            keep_menu_open = true,
-        },
-        {
-            text = _("⤢ Expand all"),
-            action = "expand",
-            keep_menu_open = true,
-        },
-        {
-            text = _("◎ Focus current"),
-            action = "focus",
-            keep_menu_open = true,
-        },
-        {
-            text = _("───────────────────"),
-            keep_menu_open = true,
-            enabled_func = function() return false end,
-        },
-    }
+function VaultBrowser.buildItemTable(tree, menu, plugin)
+    local items = {}
+
+    -- Helper: close current menu + reopen with updated state (avoids keep_menu_open dependency)
+    local function refresh()
+        UIManager:close(menu)
+        UIManager:scheduleIn(0.05, function() VaultBrowser.showBrowser(plugin) end)
+    end
+
+    -- Toolbar items — each has its own callback (no reliance on Menu-level callback)
+    table.insert(items, {
+        text = _("⤿ Collapse all"),
+        enabled_func = function() return true end,
+        keep_menu_open = true,
+        callback = function()
+            VaultBrowser.collapseAll(tree)
+            refresh()
+        end,
+    })
+    table.insert(items, {
+        text = _("⤢ Expand all"),
+        enabled_func = function() return true end,
+        keep_menu_open = true,
+        callback = function()
+            VaultBrowser.expandAll(tree)
+            refresh()
+        end,
+    })
+    table.insert(items, {
+        text = _("◎ Focus current"),
+        enabled_func = function() return true end,
+        keep_menu_open = true,
+        callback = function()
+            local current_file = plugin.ui.document and plugin.ui.document.file
+            if current_file then
+                local chain = VaultBrowser.findChain(tree, current_file)
+                if chain then
+                    for _, n in ipairs(chain) do
+                        n.expanded = true
+                    end
+                    refresh()
+                else
+                    UIManager:show(InfoMessage:new{ text = _("Current file not in vault."), timeout = 2 })
+                end
+            end
+        end,
+    })
+    table.insert(items, {
+        text = _("───────────────────"),
+        enabled_func = function() return false end,
+    })
+
     local tree_items = VaultBrowser.flattenTree(tree)
     for _, ti in ipairs(tree_items) do
         if ti.type == "directory" then
+            ti.enabled_func = function() return true end
             ti.keep_menu_open = true
+            ti.callback = function()
+                VaultBrowser.toggleNode(tree, ti.path)
+                refresh()
+            end
+        else
+            ti.enabled_func = function() return true end
+            ti.callback = function()
+                UIManager:close(menu)
+                plugin.ui:switchDocument(ti.path)
+            end
         end
         table.insert(items, ti)
     end
@@ -243,45 +283,13 @@ function VaultBrowser.showBrowser(plugin)
 
     menu = Menu:new{
         title = _("Vault Browser"),
-        item_table = VaultBrowser.buildItemTable(tree),
+        item_table = VaultBrowser.buildItemTable(tree, menu, plugin),
         covers_fullscreen = true,
         is_borderless = true,
         width = nil,
         height = nil,
         close_callback = function()
             UIManager:close(menu)
-        end,
-        callback = function(item)
-            if item.action == "collapse" then
-                VaultBrowser.collapseAll(tree)
-                persist()
-                rebuildMenu()
-            elseif item.action == "expand" then
-                VaultBrowser.expandAll(tree)
-                persist()
-                rebuildMenu()
-            elseif item.action == "focus" then
-                local current_file = plugin.ui.document and plugin.ui.document.file
-                if current_file then
-                    local chain = VaultBrowser.findChain(tree, current_file)
-                    if chain then
-                        for _, n in ipairs(chain) do
-                            n.expanded = true
-                        end
-                        persist()
-                        rebuildMenu()
-                    else
-                        UIManager:show(InfoMessage:new{ text = _("Current file not in vault."), timeout = 2 })
-                    end
-                end
-            elseif item.type == "directory" then
-                VaultBrowser.toggleNode(tree, item.path)
-                persist()
-                rebuildMenu()
-            elseif item.type == "file" then
-                UIManager:close(menu)
-                plugin.ui:switchDocument(item.path)
-            end
         end,
     }
 

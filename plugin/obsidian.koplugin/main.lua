@@ -72,6 +72,11 @@ function ObsidianPlugin:addToMainMenu(menu_items)
                 keep_menu_open = true,
                 callback = function() self:promptVaultRoot() end,
             },
+            {
+                text = _("Debug: write to obsidian-debug.log"),
+                keep_menu_open = true,
+                callback = function() self:dumpDebug() end,
+            },
         },
     }
 end
@@ -142,6 +147,29 @@ end
 function ObsidianPlugin:onOpenDocument()
     -- Install link handler as soon as a document opens (not just when menu is opened)
     self:initLinkHandler()
+end
+
+function ObsidianPlugin:onReaderReady()
+    -- Some KOReader versions fire onReaderReady instead of onOpenDocument
+    self:initLinkHandler()
+end
+
+function ObsidianPlugin:dumpDebug()
+    -- Write a diagnostic dump to /mnt/us/koreader/obsidian-debug.log
+    local f = io.open("/mnt/us/koreader/obsidian-debug.log", "a")
+    if f then
+        f:write("\n=== debug " .. os.date() .. " ===\n")
+        f:write("vault_root: " .. tostring(self.settings:readSetting("vault_root")) .. "\n")
+        f:write("back_stack length: " .. tostring(#self.back_stack) .. "\n")
+        f:write("back_stack contents:\n")
+        for i, v in ipairs(self.back_stack) do
+            f:write("  " .. i .. ": " .. tostring(v) .. "\n")
+        end
+        f:write("link_handler_installed: " .. tostring(self._link_handler_installed) .. "\n")
+        f:write("ui.document: " .. tostring(self.ui.document) .. "\n")
+        f:write("ui.link: " .. tostring(self.ui and self.ui.link) .. "\n")
+        f:close()
+    end
 end
 
 return ObsidianPlugin
