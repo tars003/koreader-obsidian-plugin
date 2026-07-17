@@ -140,7 +140,9 @@ function ObsidianPlugin:onFlushSettings()
 end
 
 function ObsidianPlugin:onCloseDocument()
-    self:clearBackStack()
+    -- Do NOT clear back_stack on document close — that fires on every
+    -- switchDocument navigation, wiping our just-pushed entry. The user
+    -- clears it explicitly via the menu.
     self._link_handler_installed = false
 end
 
