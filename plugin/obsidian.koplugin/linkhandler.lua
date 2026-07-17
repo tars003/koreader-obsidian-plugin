@@ -9,16 +9,19 @@ local LinkHandler = {}
 
 -- Resolve a relative link_url against current_file's directory.
 -- Returns an absolute path to the target .html file, or nil.
-function LinkHandler.resolveTarget(link_url, current_file, vault_root)
+function LinkHandler.resolveTarget(link_url, current_file)
     -- Strip anchor (#…) and query (?) before resolving
     local path = link_url:gsub("[#?].*$", "")
     if path == "" then
         return nil  -- same-file anchor
     end
     -- Resolve relative to current document's dir
-    local doc_dir = current_file:match("(.*/)") or "" -- dir part, or empty for root
+    local doc_dir = ""
+    if current_file then
+        doc_dir = current_file:match("(.*/)") or ""
+    end
     local resolved = ffiUtil.joinPath(doc_dir, path)
-    -- Normalize to absolute real path; KOReader's realpath normalises ./ and ../
+    -- Normalize to absolute real path
     resolved = ffiUtil.realpath(resolved)
     if not resolved then
         return nil
@@ -31,40 +34,45 @@ function LinkHandler.resolveTarget(link_url, current_file, vault_root)
     return resolved
 end
 
--- Install the wrapper on ReaderLink. Called from init when a document is open.
+-- Install wrappers on ReaderLink. Called from onOpenDocument / onReaderReady.
 function LinkHandler.install(plugin)
     local link = plugin.ui.link
     if not link then return end
+    if not plugin.ui.document then return end
 
-    -- Register the empty scheme so relative/schemeless URLs reach onGoToExternalLink
-    link:registerScheme("")
-
-    -- Save original and wrap
-    local orig_onGoToExternalLink = link.onGoToExternalLink
     local vault_root = plugin.settings:readSetting("vault_root") or ""
 
+    -- Try registering the empty scheme (for newer KOReader that supports it)
+    -- Use pcall so this is safe on older versions
+    pcall(function() link:registerScheme("") end)
+
+    -- WRAPPER 1: onGoToExternalLink (for newer KOReader with registerScheme)
+    -- Only fire if it's a relative link to a .html file
+    local orig_onGoToExternalLink = link.onGoToExternalLink
     function link:onGoToExternalLink(link_url)
-        -- If it's a schemeless/relative link AND auto-follow is on, try direct open
         if not link_url:match("^%w[%w+%-.]*:") and vault_root ~= "" then
-            local target = LinkHandler.resolveTarget(
-                link_url, plugin.ui.document.file, vault_root
-            )
+            local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
             if target then
-                -- Push current file onto back-stack
                 table.insert(plugin.back_stack, plugin.ui.document.file)
                 plugin.ui:switchDocument(target)
                 return true
-            else
-                -- Broken or missing target
-                UIManager:show(InfoMessage:new{
-                    text = _("Note not found"),
-                    timeout = 2,
-                })
-                return true  -- prevent fallthrough to original dialog
             end
         end
-        -- Let original handler show its dialog for http/mailto/etc.
         return orig_onGoToExternalLink(self, link_url)
+    end
+
+    -- WRAPPER 2: openFileFromLink (for older KOReader / fallback)
+    -- Relative file links go through this method. Push to back stack before opening.
+    local orig_openFileFromLink = link.openFileFromLink
+    function link:openFileFromLink(link_url)
+        if not link_url:match("^%w[%w+%-.]*:") and vault_root ~= "" then
+            local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
+            if target then
+                -- Push to back stack so "Go back" works
+                table.insert(plugin.back_stack, plugin.ui.document.file)
+            end
+        end
+        return orig_openFileFromLink(self, link_url)
     end
 end
 

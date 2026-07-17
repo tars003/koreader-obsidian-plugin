@@ -1,6 +1,10 @@
 -- plugin/obsidian.koplugin/vaultbrowser.lua
 local lfs = require("libs/libkoreader-lfs")
 local ffiUtil = require("ffi/util")
+local Menu = require("ui/widget/menu")
+local UIManager = require("ui/uimanager")
+local InfoMessage = require("ui/widget/infomessage")
+local _ = require("gettext")
 
 local VaultBrowser = {}
 
@@ -48,8 +52,7 @@ function VaultBrowser.scanVault(vault_root)
         for _, e in ipairs(entries) do
             if e.mode == "directory" then
                 table.insert(node.children, _scan(e.path))
-            else
-                -- file (or fallback-tagged) — only include .html/.htm
+            elseif e.name:match("%.html?$") then
                 table.insert(node.children, {
                     name = e.name:gsub("%.html?$", ""),
                     path = e.path,
@@ -152,22 +155,19 @@ function VaultBrowser.findChain(tree, needle)
     return _find(tree)
 end
 
-local Menu = require("ui/widget/menu")
-local UIManager = require("ui/uimanager")
-local InfoMessage = require("ui/widget/infomessage")
-local _ = require("gettext")
-
--- Build the flat item_table from the tree, with toolbar items
-function VaultBrowser.buildItemTable(tree, menu, plugin)
+-- Build the flat item_table from the tree.
+-- Each item gets its own callback (no Menu-level dispatch).
+-- To refresh state after an action, callbacks call VaultBrowser.showBrowser(plugin).
+function VaultBrowser.buildItemTable(tree, plugin)
     local items = {}
 
-    -- Helper: close current menu + reopen with updated state (avoids keep_menu_open dependency)
     local function refresh()
-        UIManager:close(menu)
-        UIManager:scheduleIn(0.05, function() VaultBrowser.showBrowser(plugin) end)
+        UIManager:scheduleIn(0.05, function()
+            VaultBrowser.showBrowser(plugin)
+        end)
     end
 
-    -- Toolbar items — each has its own callback (no reliance on Menu-level callback)
+    -- Toolbar: collapse all
     table.insert(items, {
         text = _("⤿ Collapse all"),
         enabled_func = function() return true end,
@@ -177,6 +177,7 @@ function VaultBrowser.buildItemTable(tree, menu, plugin)
             refresh()
         end,
     })
+    -- Toolbar: expand all
     table.insert(items, {
         text = _("⤢ Expand all"),
         enabled_func = function() return true end,
@@ -186,6 +187,7 @@ function VaultBrowser.buildItemTable(tree, menu, plugin)
             refresh()
         end,
     })
+    -- Toolbar: focus current
     table.insert(items, {
         text = _("◎ Focus current"),
         enabled_func = function() return true end,
@@ -205,11 +207,13 @@ function VaultBrowser.buildItemTable(tree, menu, plugin)
             end
         end,
     })
+    -- Separator
     table.insert(items, {
         text = _("───────────────────"),
         enabled_func = function() return false end,
     })
 
+    -- Tree items
     local tree_items = VaultBrowser.flattenTree(tree)
     for _, ti in ipairs(tree_items) do
         if ti.type == "directory" then
@@ -222,7 +226,10 @@ function VaultBrowser.buildItemTable(tree, menu, plugin)
         else
             ti.enabled_func = function() return true end
             ti.callback = function()
-                UIManager:close(menu)
+                if plugin._vault_browser_menu then
+                    UIManager:close(plugin._vault_browser_menu)
+                    plugin._vault_browser_menu = nil
+                end
                 plugin.ui:switchDocument(ti.path)
             end
         end
@@ -240,6 +247,12 @@ function VaultBrowser.showBrowser(plugin)
             timeout = 3,
         })
         return
+    end
+
+    -- Close any existing browser menu so we don't stack menus
+    if plugin._vault_browser_menu then
+        pcall(function() UIManager:close(plugin._vault_browser_menu) end)
+        plugin._vault_browser_menu = nil
     end
 
     local tree = VaultBrowser.scanVault(vault_root)
@@ -275,24 +288,21 @@ function VaultBrowser.showBrowser(plugin)
         plugin:saveSettings()
     end
 
-    local menu
-
-    local function rebuildMenu()
-        menu:switchItemTable(nil, VaultBrowser.buildItemTable(tree), -1)
-    end
-
-    menu = Menu:new{
+    local menu = Menu:new{
         title = _("Vault Browser"),
-        item_table = VaultBrowser.buildItemTable(tree, menu, plugin),
+        item_table = VaultBrowser.buildItemTable(tree, plugin),
         covers_fullscreen = true,
         is_borderless = true,
         width = nil,
         height = nil,
         close_callback = function()
+            if plugin._vault_browser_menu == menu then
+                plugin._vault_browser_menu = nil
+            end
             UIManager:close(menu)
         end,
     }
-
+    plugin._vault_browser_menu = menu
     UIManager:show(menu)
 end
 
