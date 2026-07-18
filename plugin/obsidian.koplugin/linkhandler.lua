@@ -61,7 +61,11 @@ function LinkHandler.install(plugin)
             log("  resolveTarget -> " .. tostring(target))
             if target then
                 table.insert(plugin.back_stack, plugin.ui.document.file)
+                log("  pushed: from=" .. tostring(plugin.ui.document.file)
+                    .. " | back_stack.len=" .. tostring(#plugin.back_stack)
+                    .. " | plugin=" .. tostring(plugin))
                 plugin.ui:switchDocument(target)
+                log("  switchDocument done")
                 return true
             end
         end

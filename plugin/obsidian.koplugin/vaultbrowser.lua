@@ -15,14 +15,19 @@ local function listDirSorted(dir_path)
         if name ~= "." and name ~= ".." and name ~= "assets" then
             local full = ffiUtil.joinPath(dir_path, name)
             local mode = lfs.attributes(full, "mode")
-            if not mode then
-                -- lfs.attributes can fail on Kindle FAT32; try directory probe
-                local is_dir = pcall(function() for _ in lfs.dir(full) do return true end end)
-                if is_dir then
-                    mode = "directory"
-                elseif name:match("%.html?$") then
+            if mode == "directory" then
+                -- known directory; will be recursed
+            elseif mode == "file" then
+                -- known file; caller filters by .html
+            else
+                -- lfs.attributes failed (e.g. Kindle FAT32 quirks).
+                -- Use the name's extension as a last-resort classifier.
+                -- Never recurse on a non-explicit directory — that path
+                -- is what causes the stack overflow on Kindle.
+                if name:match("%.html?$") then
                     mode = "file"
                 end
+                -- else: drop the entry (don't recurse, don't add)
             end
             if mode then
                 table.insert(entries, {name = name, path = full, mode = mode})
@@ -39,7 +44,12 @@ end
 
 -- Recursively build the tree
 function VaultBrowser.scanVault(vault_root)
+    local visited = {}
     local function _scan(path)
+        if visited[path] then
+            return nil  -- cycle protection (e.g. self-loop symlink on PC, or repeated path on Kindle)
+        end
+        visited[path] = true
         local name = path:match("([^/]+)$") or path
         local node = {
             name = name,
@@ -48,10 +58,26 @@ function VaultBrowser.scanVault(vault_root)
             expanded = false,
             children = {},
         }
-        local entries = listDirSorted(path)
+        local entries
+        do
+            local ok_list, result = pcall(listDirSorted, path)
+            if not ok_list then
+                -- Could not list this directory (permission denied, etc.).
+                -- Return a stub node with no children so the tree still builds.
+                -- The outer pcall in showBrowser will catch the rare case where
+                -- even the root fails to list.
+                io.stderr:write("vaultbrowser: listDirSorted failed for "
+                    .. tostring(path) .. ": " .. tostring(result) .. "\n")
+                return node
+            end
+            entries = result
+        end
         for _, e in ipairs(entries) do
             if e.mode == "directory" then
-                table.insert(node.children, _scan(e.path))
+                local child = _scan(e.path)
+                if child then
+                    table.insert(node.children, child)
+                end
             elseif e.name:match("%.html?$") then
                 table.insert(node.children, {
                     name = e.name:gsub("%.html?$", ""),
@@ -249,13 +275,32 @@ function VaultBrowser.showBrowser(plugin)
         return
     end
 
+    -- Validate vault root is an accessible directory before scanning
+    local root_mode = lfs.attributes(vault_root, "mode")
+    if root_mode ~= "directory" then
+        UIManager:show(InfoMessage:new{
+            text = _("Vault root is not a directory or is not accessible: ") .. tostring(vault_root),
+            timeout = 5,
+        })
+        return
+    end
+
     -- Close any existing browser menu so we don't stack menus
     if plugin._vault_browser_menu then
         pcall(function() UIManager:close(plugin._vault_browser_menu) end)
         plugin._vault_browser_menu = nil
     end
 
-    local tree = VaultBrowser.scanVault(vault_root)
+    -- Scan the vault (cycle-safe + is_dir fallback fixed in listDirSorted).
+    -- pcall so a single bad file or permission error can't crash KOReader.
+    local ok, tree = pcall(VaultBrowser.scanVault, vault_root)
+    if not ok then
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to scan vault: ") .. tostring(tree),
+            timeout = 5,
+        })
+        return
+    end
 
     -- Load and apply persisted expand-state
     local expand_state = plugin.settings:readSetting("tree_expanded") or {}

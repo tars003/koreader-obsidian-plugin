@@ -45,6 +45,9 @@ function ObsidianPlugin:addToMainMenu(menu_items)
         self:initLinkHandler()
         self._link_handler_installed = true
     end
+    self:logLinkEvent("addToMainMenu", "self=" .. tostring(self)
+        .. " | back_stack.len=" .. tostring(#self.back_stack)
+        .. " | ui.document.file=" .. tostring(self.ui.document and self.ui.document.file))
     local vault_root_text = self.settings:readSetting("vault_root") or _("(not set)")
     menu_items.obsidian = {
         text = _("Obsidian Vault"),
