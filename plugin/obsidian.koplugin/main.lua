@@ -8,13 +8,24 @@ local LinkHandler = require("linkhandler")
 local T = require("ffi/util").template
 local _ = require("gettext")
 
+-- Module-level shared state.
+-- KOReader creates a SEPARATE plugin instance for each UI context
+-- (file manager, each reader, etc.), so any state that must survive
+-- across instances lives here, not on `self`. Lua's `require` cache
+-- guarantees this chunk runs once per process, so all instances
+-- reference the same table.
+-- Confirmed by diagnostic log: 5 distinct plugin instances in one session.
+local _obsidian_shared = {
+    back_stack = {},
+}
+
 local ObsidianPlugin = WidgetContainer:extend{
     name = "obsidian",
     is_doc_only = false,
 }
 
 function ObsidianPlugin:init()
-    self.back_stack = {}
+    self._shared = _obsidian_shared
     self:loadSettings()
     self.ui.menu:registerToMainMenu(self)
     -- link handler: only active when a document is open
@@ -46,7 +57,8 @@ function ObsidianPlugin:addToMainMenu(menu_items)
         self._link_handler_installed = true
     end
     self:logLinkEvent("addToMainMenu", "self=" .. tostring(self)
-        .. " | back_stack.len=" .. tostring(#self.back_stack)
+        .. " | shared=" .. tostring(self._shared)
+        .. " | back_stack.len=" .. tostring(#self._shared.back_stack)
         .. " | ui.document.file=" .. tostring(self.ui.document and self.ui.document.file))
     local vault_root_text = self.settings:readSetting("vault_root") or _("(not set)")
     menu_items.obsidian = {
@@ -60,13 +72,13 @@ function ObsidianPlugin:addToMainMenu(menu_items)
             },
             {
                 text = _("Go back to previous note"),
-                enabled_func = function() return #self.back_stack > 0 end,
+                enabled_func = function() return #self._shared.back_stack > 0 end,
                 separator = true,
                 callback = function() self:goBack() end,
             },
             {
                 text = _("Clear navigation history"),
-                enabled_func = function() return #self.back_stack > 0 end,
+                enabled_func = function() return #self._shared.back_stack > 0 end,
                 callback = function() self:clearBackStack() end,
             },
             {
@@ -119,8 +131,8 @@ function ObsidianPlugin:openVaultBrowser()
 end
 
 function ObsidianPlugin:goBack()
-    if #self.back_stack > 0 then
-        local previous = table.remove(self.back_stack)
+    if #self._shared.back_stack > 0 then
+        local previous = table.remove(self._shared.back_stack)
         self.ui:switchDocument(previous)
     elseif self.ui.document then
         -- Back-stack empty and a document is open — close it to return to file manager
@@ -129,7 +141,10 @@ function ObsidianPlugin:goBack()
 end
 
 function ObsidianPlugin:clearBackStack()
-    self.back_stack = {}
+    -- Clear in place so the shared table reference stays the same
+    for i = #self._shared.back_stack, 1, -1 do
+        self._shared.back_stack[i] = nil
+    end
 end
 
 function ObsidianPlugin:initLinkHandler()
@@ -166,9 +181,10 @@ function ObsidianPlugin:dumpDebug()
         f:write("\n=== debug " .. os.date() .. " ===\n")
         f:write("vault_root: " .. tostring(self.settings:readSetting("vault_root")) .. "\n")
         f:write("ui.document.file: " .. tostring(self.ui.document and self.ui.document.file) .. "\n")
-        f:write("back_stack length: " .. tostring(#self.back_stack) .. "\n")
+        f:write("shared: " .. tostring(self._shared) .. "\n")
+        f:write("back_stack length: " .. tostring(#self._shared.back_stack) .. "\n")
         f:write("back_stack contents:\n")
-        for i, v in ipairs(self.back_stack) do
+        for i, v in ipairs(self._shared.back_stack) do
             f:write("  " .. i .. ": " .. tostring(v) .. "\n")
         end
         f:write("link_handler_installed: " .. tostring(self._link_handler_installed) .. "\n")

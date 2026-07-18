@@ -60,10 +60,10 @@ function LinkHandler.install(plugin)
             local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
             log("  resolveTarget -> " .. tostring(target))
             if target then
-                table.insert(plugin.back_stack, plugin.ui.document.file)
+                table.insert(plugin._shared.back_stack, plugin.ui.document.file)
                 log("  pushed: from=" .. tostring(plugin.ui.document.file)
-                    .. " | back_stack.len=" .. tostring(#plugin.back_stack)
-                    .. " | plugin=" .. tostring(plugin))
+                    .. " | back_stack.len=" .. tostring(#plugin._shared.back_stack)
+                    .. " | shared=" .. tostring(plugin._shared))
                 plugin.ui:switchDocument(target)
                 log("  switchDocument done")
                 return true
@@ -80,7 +80,7 @@ function LinkHandler.install(plugin)
             local target = LinkHandler.resolveTarget(link_url, plugin.ui.document.file)
             log("  resolveTarget -> " .. tostring(target))
             if target then
-                table.insert(plugin.back_stack, plugin.ui.document.file)
+                table.insert(plugin._shared.back_stack, plugin.ui.document.file)
             end
         end
         return orig_openFileFromLink(self, link_url)

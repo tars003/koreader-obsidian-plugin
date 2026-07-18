@@ -183,13 +183,19 @@ end
 
 -- Build the flat item_table from the tree.
 -- Each item gets its own callback (no Menu-level dispatch).
--- To refresh state after an action, callbacks call VaultBrowser.showBrowser(plugin).
+-- To refresh state after an action, callbacks call VaultBrowser._showMenu(plugin, tree)
+-- directly (NOT showBrowser, which would re-scan the whole vault and lose
+-- the in-memory toggle state).
 function VaultBrowser.buildItemTable(tree, plugin)
     local items = {}
 
     local function refresh()
         UIManager:scheduleIn(0.05, function()
-            VaultBrowser.showBrowser(plugin)
+            if plugin._vault_browser_menu then
+                pcall(function() UIManager:close(plugin._vault_browser_menu) end)
+                plugin._vault_browser_menu = nil
+            end
+            VaultBrowser._showMenu(plugin, tree)
         end)
     end
 
@@ -333,6 +339,13 @@ function VaultBrowser.showBrowser(plugin)
         plugin:saveSettings()
     end
 
+    VaultBrowser._showMenu(plugin, tree)
+end
+
+-- Build and show the vault browser menu from an already-built in-memory tree.
+-- Used by refresh (after toggle) so toggles are preserved without re-scanning.
+-- Used by showBrowser (initial) so menu construction is in one place.
+function VaultBrowser._showMenu(plugin, tree)
     local menu = Menu:new{
         title = _("Vault Browser"),
         item_table = VaultBrowser.buildItemTable(tree, plugin),
