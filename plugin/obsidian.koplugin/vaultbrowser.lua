@@ -190,7 +190,7 @@ function VaultBrowser.buildItemTable(tree, plugin)
     local items = {}
 
     local function refresh()
-        UIManager:scheduleIn(0.05, function()
+        UIManager:nextTick(function()
             if plugin._vault_browser_menu then
                 pcall(function() UIManager:close(plugin._vault_browser_menu) end)
                 plugin._vault_browser_menu = nil

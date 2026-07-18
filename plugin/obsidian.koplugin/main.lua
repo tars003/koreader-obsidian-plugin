@@ -11,11 +11,12 @@ local _ = require("gettext")
 -- Module-level shared state.
 -- KOReader creates a SEPARATE plugin instance for each UI context
 -- (file manager, each reader, etc.), so any state that must survive
--- across instances lives here, not on `self`. Lua's `require` cache
--- guarantees this chunk runs once per process, so all instances
--- reference the same table.
+-- across instances must live in _G (the global table), not in a local.
+-- A local at the top of this file is NOT shared — KOReader uses dofile
+-- (not require) to load plugins, so each instance gets its own copy.
+-- _G is the one table that every Lua chunk shares.
 -- Confirmed by diagnostic log: 5 distinct plugin instances in one session.
-local _obsidian_shared = {
+_G._obsidian_shared = _G._obsidian_shared or {
     back_stack = {},
 }
 
@@ -25,7 +26,7 @@ local ObsidianPlugin = WidgetContainer:extend{
 }
 
 function ObsidianPlugin:init()
-    self._shared = _obsidian_shared
+    self._shared = _G._obsidian_shared
     self:loadSettings()
     self.ui.menu:registerToMainMenu(self)
     -- link handler: only active when a document is open
