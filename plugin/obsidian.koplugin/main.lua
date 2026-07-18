@@ -29,6 +29,23 @@ function ObsidianPlugin:init()
     self._shared = _G._obsidian_shared
     self:loadSettings()
     self.ui.menu:registerToMainMenu(self)
+    -- Register with KOReader's Dispatcher so the vault actions
+    -- appear in the Gesture Manager for custom gestures.
+    pcall(function()
+        local Dispatcher = require("dispatcher")
+        Dispatcher:registerAction(
+            "obsidian_vault",
+            "obsidian_browse_vault",
+            _("Browse vault"),
+            function() self:openVaultBrowser() end
+        )
+        Dispatcher:registerAction(
+            "obsidian_vault",
+            "obsidian_go_back",
+            _("Go back to previous note"),
+            function() self:goBack() end
+        )
+    end)
     -- link handler: only active when a document is open
     if self.ui.document then
         self:initLinkHandler()
