@@ -262,7 +262,23 @@ function VaultBrowser.buildItemTable(tree, plugin)
                     UIManager:close(plugin._vault_browser_menu)
                     plugin._vault_browser_menu = nil
                 end
-                plugin.ui:switchDocument(ti.path)
+                -- Open the file. Two contexts:
+                --   Reader context (ui.document ~= nil): ui:switchDocument
+                --   FM context (ui.document == nil): ReaderUI:showReader
+                local ok_open, err_open = pcall(function()
+                    if plugin.ui.document then
+                        plugin.ui:switchDocument(ti.path)
+                    else
+                        local ReaderUI = require("apps/reader/readerui")
+                        ReaderUI:showReader(ti.path)
+                    end
+                end)
+                if not ok_open then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Failed to open: ") .. tostring(err_open),
+                        timeout = 4,
+                    })
+                end
             end
         end
         table.insert(items, ti)
