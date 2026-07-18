@@ -107,3 +107,20 @@ def test_transparent_png_composites_to_white(tmp_path):
     im = Image.open(files[0])
     assert im.mode == "L"  # grayscale (cfg has grayscale=True)
     assert im.getpixel((10, 10)) == 255  # transparent area -> white, not black
+
+
+def test_unescape_ampersand_in_url_before_fetch(tmp_path):
+    """Obsidian Clipper writes HTML-escaped &amp; in image src."""
+    img_opts = ImageOptions(retries=0)
+    manifest = Manifest(tmp_path / "manifest.json")
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        return httpx.Response(200, content=_png_bytes())
+
+    transport = httpx.MockTransport(handler)
+    cache = ImageCache(tmp_path / "assets", tmp_path, tmp_path / "in", img_opts, manifest, transport=transport)
+    cache._get("https://example.com/img?format=jpg&amp;name=large", "note.md")
+    assert "&amp;" not in captured["url"]
+    assert "&name=large" in captured["url"]

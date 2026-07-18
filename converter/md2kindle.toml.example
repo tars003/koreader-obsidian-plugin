@@ -11,5 +11,5 @@ max_width = 1000
 grayscale = true
 jpeg_quality = 70
 timeout = 15.0
-retries = 3
+retries = 1
 max_bytes = 8388608

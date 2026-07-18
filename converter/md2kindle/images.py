@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import os
 import re
@@ -114,6 +115,9 @@ class ImageCache:
 
     def _get(self, src: str, src_relpath: str) -> str | None:
         if src.startswith(("http://", "https://")):
+            # Obsidian Clipper saves HTML entities (&amp; → &, etc.) in
+            # image src attributes. Unescape so the fetch hits the real URL.
+            src = html.unescape(src)
             entry = self.manifest.get_image(src)
             if entry and not entry.get("failed") and entry.get("file"):
                 return Path(entry["file"]).name

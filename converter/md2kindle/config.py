@@ -17,7 +17,7 @@ class ImageOptions:
     grayscale: bool = True
     jpeg_quality: int = 70
     timeout: float = 15.0
-    retries: int = 3
+    retries: int = 1
     max_bytes: int = 8 * 1024 * 1024  # 8 MB
 
 
