@@ -12,6 +12,11 @@ build/
 # md2kindle runtime config (user-specific; ship the .example instead)
 converter/md2kindle.toml
 
+# Rust (sync-app)
+sync-app/target/
+sync-app/config.toml
+sync-app/kindle-sync.log
+
 # Editor / OS
 .DS_Store
 Thumbs.db

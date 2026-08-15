@@ -1,0 +1,23 @@
+[package]
+name = "kindle-vault-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Detect Kindle USB plug-in, run md2kindle, copy vault, eject"
+authors = ["obsidian-kindle"]
+
+[dependencies]
+eframe = { version = "0.31", default-features = true, features = ["default_fonts", "glow"] }
+egui = "0.31"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+chrono = "0.4"
+tray-icon = "0.19"
+open = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_UI_Shell",
+] }
