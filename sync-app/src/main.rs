@@ -4,6 +4,8 @@ mod config;
 mod detect;
 mod eject;
 mod logutil;
+mod notify;
+mod startup;
 mod sync;
 mod winutil;
 
@@ -28,6 +30,7 @@ struct App {
     python_path: String,
     volume_label: String,
     vault_folder: String,
+    run_at_startup: bool,
 
     logger: Logger,
     detect: Arc<Mutex<DetectState>>,
@@ -97,6 +100,7 @@ impl App {
         let python_path = cfg.paths.python_path.clone();
         let volume_label = cfg.kindle.volume_label.clone();
         let vault_folder = cfg.kindle.vault_folder.clone();
+        let run_at_startup = startup::is_run_at_startup() || cfg.behavior.run_at_startup;
 
         Self {
             cfg,
@@ -104,6 +108,7 @@ impl App {
             python_path,
             volume_label,
             vault_folder,
+            run_at_startup,
             logger,
             detect,
             status,
@@ -125,17 +130,33 @@ impl App {
         self.cfg.paths.python_path = self.python_path.trim().to_string();
         self.cfg.kindle.volume_label = self.volume_label.trim().to_string();
         self.cfg.kindle.vault_folder = self.vault_folder.trim().to_string();
+        self.cfg.behavior.run_at_startup = self.run_at_startup;
     }
 
     fn save_config(&mut self) {
         self.apply_fields_to_cfg();
         match self.cfg.save() {
             Ok(()) => {
-                self.config_msg = Some("Config saved.".into());
-                self.logger.log(format!(
-                    "Config saved → {}",
-                    AppConfig::config_path().display()
-                ));
+                match startup::set_run_at_startup(self.run_at_startup) {
+                    Ok(()) => {
+                        let msg = if self.run_at_startup {
+                            "Config saved. Run at startup: ON"
+                        } else {
+                            "Config saved. Run at startup: OFF"
+                        };
+                        self.config_msg = Some(msg.into());
+                        self.logger.log(format!(
+                            "Config saved → {} (run_at_startup={})",
+                            AppConfig::config_path().display(),
+                            self.run_at_startup
+                        ));
+                    }
+                    Err(e) => {
+                        self.config_msg =
+                            Some(format!("Config saved, but startup toggle failed: {e}"));
+                        self.logger.log(format!("Startup toggle error: {e}"));
+                    }
+                }
                 self.show_first_run_hint = !self.cfg.is_configured();
             }
             Err(e) => {
@@ -173,9 +194,9 @@ impl App {
             if self.last_notified_root.as_deref() != Some(d.root.as_str()) {
                 self.last_notified_root = Some(d.root.clone());
                 self.logger.log(format!("Kindle detected at {}", d.root));
-                show_notification(
+                notify::show(
                     "Kindle Vault Sync",
-                    &format!("Kindle detected at {}. Click Sync Now.", d.root),
+                    &format!("Kindle detected at {}. Open app → Sync Now.", d.root),
                 );
             }
         } else {
@@ -335,6 +356,10 @@ impl eframe::App for App {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.vault_folder).desired_width(420.0),
                     );
+                    ui.end_row();
+
+                    ui.label("Startup:");
+                    ui.checkbox(&mut self.run_at_startup, "Run at Windows startup");
                     ui.end_row();
                 });
 
@@ -567,36 +592,6 @@ fn make_icon() -> Result<tray_icon::Icon, String> {
         }
     }
     tray_icon::Icon::from_rgba(rgba, size, size).map_err(|e| e.to_string())
-}
-
-fn show_notification(title: &str, body: &str) {
-    let title = title.replace('\'', "''");
-    let body = body.replace('\'', "''");
-    let script = format!(
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-         $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
-         $t.GetElementsByTagName('text').Item(0).AppendChild($t.CreateTextNode('{title}')) > $null; \
-         $t.GetElementsByTagName('text').Item(1).AppendChild($t.CreateTextNode('{body}')) > $null; \
-         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('KindleVaultSync').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
-    );
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        &script,
-    ])
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let _ = cmd.spawn();
 }
 
 fn main() -> eframe::Result<()> {

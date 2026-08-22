@@ -27,6 +27,9 @@ pub struct KindleConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorConfig {
     pub poll_interval_secs: u64,
+    /// Start kindle-vault-sync when the user logs into Windows.
+    #[serde(default)]
+    pub run_at_startup: bool,
 }
 
 impl Default for AppConfig {
@@ -42,6 +45,7 @@ impl Default for AppConfig {
             },
             behavior: BehaviorConfig {
                 poll_interval_secs: 5,
+                run_at_startup: false,
             },
         }
     }

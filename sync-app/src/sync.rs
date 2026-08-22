@@ -66,17 +66,15 @@ pub fn spawn_sync(
     thread::spawn(move || {
         let result = run_sync(&cfg, &kindle_root, &logger, &status);
         match result {
-            Ok(()) => {
-                set_status(
-                    &status,
-                    SyncPhase::Done,
-                    "Kindle ejected. You can unplug now.".to_string(),
-                );
+            Ok(msg) => {
+                set_status(&status, SyncPhase::Done, msg.clone());
                 logger.log("Sync complete.");
+                crate::notify::show("Kindle Vault Sync", &msg);
             }
             Err(e) => {
                 set_status(&status, SyncPhase::Error, e.clone());
                 logger.log(format!("Error: {e}"));
+                crate::notify::show("Kindle Vault Sync — Error", &e);
             }
         }
         busy.store(false, Ordering::SeqCst);
@@ -88,7 +86,7 @@ fn run_sync(
     kindle_root: &str,
     logger: &Logger,
     status: &SharedStatus,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if !cfg.is_configured() {
         return Err("Converter dir not set (or md2kindle.toml missing).".into());
     }
@@ -254,13 +252,19 @@ fn run_sync(
     // 5. Safe eject
     set_status(status, SyncPhase::Ejecting, "Ejecting Kindle...");
     logger.log("Ejecting Kindle...");
-    match crate::eject::eject_drive(&root) {
-        Ok(()) => logger.log("Kindle ejected"),
+    let done_msg = match crate::eject::eject_drive(&root) {
+        Ok(()) => {
+            logger.log("Kindle ejected");
+            "Sync complete. Kindle ejected — safe to unplug.".to_string()
+        }
         Err(e) => {
             // Non-fatal: copy already succeeded
-            logger.log(format!("Eject warning: {e}. Copy OK — eject manually."));
+            logger.log(format!("Eject warning: {e}. Copy OK — eject manually in Explorer."));
+            format!(
+                "Sync complete (copy OK). Eject failed — use Safely Remove in Explorer. ({e})"
+            )
         }
-    }
+    };
 
-    Ok(())
+    Ok(done_msg)
 }
