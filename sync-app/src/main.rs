@@ -5,6 +5,7 @@ mod detect;
 mod eject;
 mod logutil;
 mod sync;
+mod winutil;
 
 use config::AppConfig;
 use eframe::egui;
@@ -23,7 +24,6 @@ struct DetectState {
 
 struct App {
     cfg: AppConfig,
-    // Editable UI fields (mirrored from cfg; written back on Save)
     converter_dir: String,
     python_path: String,
     volume_label: String,
@@ -34,26 +34,22 @@ struct App {
     status: SharedStatus,
     busy: Arc<AtomicBool>,
 
-    // UI-only
     status_line: String,
     last_log_len: usize,
     auto_scroll: bool,
     show_first_run_hint: bool,
     config_msg: Option<String>,
 
-    // Tray: keep the handle alive for the process lifetime.
+    /// Kept alive for process lifetime.
     _tray: Option<tray_icon::TrayIcon>,
-    tray_show_requested: Arc<AtomicBool>,
     tray_sync_requested: Arc<AtomicBool>,
-    tray_quit_requested: Arc<AtomicBool>,
-    /// When true, the next close request really exits (tray Quit).
-    allow_exit: bool,
+    /// When true, close really exits (tray Quit / Exit button).
+    allow_exit: Arc<AtomicBool>,
     last_notified_root: Option<String>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Slightly larger UI for readability
         let mut style = (*cc.egui_ctx.style()).clone();
         style.text_styles.insert(
             egui::TextStyle::Body,
@@ -76,23 +72,27 @@ impl App {
         let detect = Arc::new(Mutex::new(DetectState::default()));
         let status = new_shared_status();
         let busy = Arc::new(AtomicBool::new(false));
-
-        // Drive polling runs on the UI thread (~2 Hz) via refresh_detection().
-
-        let tray_show_requested = Arc::new(AtomicBool::new(false));
         let tray_sync_requested = Arc::new(AtomicBool::new(false));
-        let tray_quit_requested = Arc::new(AtomicBool::new(false));
+        let allow_exit = Arc::new(AtomicBool::new(false));
+
+        // Heartbeat: keep egui waking even while the window is hidden so
+        // drive polling + tray sync flags still run.
+        {
+            let ctx = cc.egui_ctx.clone();
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(250));
+                ctx.request_repaint();
+            });
+        }
 
         let tray = build_tray(
             cc.egui_ctx.clone(),
-            Arc::clone(&tray_show_requested),
             Arc::clone(&tray_sync_requested),
-            Arc::clone(&tray_quit_requested),
-            &logger,
+            Arc::clone(&allow_exit),
+            logger.clone(),
         );
 
         let show_first_run_hint = !cfg.is_configured();
-
         let converter_dir = cfg.paths.converter_dir.clone();
         let python_path = cfg.paths.python_path.clone();
         let volume_label = cfg.kindle.volume_label.clone();
@@ -114,19 +114,10 @@ impl App {
             show_first_run_hint,
             config_msg: None,
             _tray: tray,
-            tray_show_requested,
             tray_sync_requested,
-            tray_quit_requested,
-            allow_exit: false,
+            allow_exit,
             last_notified_root: None,
         }
-    }
-
-    fn show_window(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
     }
 
     fn apply_fields_to_cfg(&mut self) {
@@ -179,7 +170,6 @@ impl App {
             };
         } else if let Some(d) = &found {
             self.status_line = format!("Kindle detected at {}", d.root);
-            // Notify once per plug-in
             if self.last_notified_root.as_deref() != Some(d.root.as_str()) {
                 self.last_notified_root = Some(d.root.clone());
                 self.logger.log(format!("Kindle detected at {}", d.root));
@@ -193,7 +183,6 @@ impl App {
                 self.logger.log("Kindle disconnected");
             }
             self.last_notified_root = None;
-            // Keep done/error message briefly if set
             if matches!(sync_status.phase, SyncPhase::Done | SyncPhase::Error)
                 && !sync_status.detail.is_empty()
             {
@@ -227,6 +216,25 @@ impl App {
             Arc::clone(&self.busy),
         );
     }
+
+    fn request_exit(&self, ctx: &egui::Context) {
+        self.logger.log("Exit requested");
+        self.allow_exit.store(true, Ordering::SeqCst);
+        // Make sure a close event can be delivered.
+        let _ = winutil::show_main_window();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // Hard fallback if the viewport close path is stuck.
+        let allow = Arc::clone(&self.allow_exit);
+        let logger = self.logger.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(800));
+            if allow.load(Ordering::SeqCst) {
+                logger.log("Force exit");
+                std::process::exit(0);
+            }
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -234,43 +242,33 @@ impl eframe::App for App {
         egui::Color32::from_rgb(32, 32, 36).to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Poll detection ~4x/sec from UI thread (cheap Win32 calls)
-        if ctx.input(|i| i.time) as u64 % 1 == 0 {
-            // always refresh; egui runs this every frame, throttle ourselves
-        }
-        // Throttle via memory of last second — simpler: just call every frame is fine
-        // for 26 drive letter probes; still throttle to ~2 Hz via request_repaint.
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drive poll ~2 Hz (heartbeat also keeps this alive while hidden)
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
         if now_ms.saturating_sub(LAST.load(Ordering::Relaxed)) > 500 {
             LAST.store(now_ms, Ordering::Relaxed);
             self.refresh_detection();
         }
-        ctx.request_repaint_after(Duration::from_millis(500));
 
-        // Tray menu / icon actions (flags set from tray thread + request_repaint)
-        if self.tray_quit_requested.swap(false, Ordering::SeqCst) {
-            self.logger.log("Quit from tray");
-            self.allow_exit = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        if self.tray_show_requested.swap(false, Ordering::SeqCst) {
-            self.logger.log("Show from tray");
-            self.show_window(ctx);
-        }
+        // Tray "Sync Now" — Show is handled in the tray thread via Win32.
         if self.tray_sync_requested.swap(false, Ordering::SeqCst) {
             self.logger.log("Sync from tray");
-            self.show_window(ctx);
+            let _ = winutil::show_main_window();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.start_sync();
         }
 
-        // Close-to-tray: intercept close and hide instead (unless Quit was chosen)
+        // Close-to-tray (unless real exit)
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if close_requested && !self.allow_exit {
+        if close_requested && !self.allow_exit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Prefer Win32 hide — more reliable to reverse than egui Visible(false) alone.
+            if !winutil::hide_main_window() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
             self.logger.log("Minimized to tray");
         }
 
@@ -342,7 +340,6 @@ impl eframe::App for App {
 
             ui.add_space(10.0);
 
-            // Status
             let status_color = if busy {
                 egui::Color32::from_rgb(120, 180, 255)
             } else if kindle_present.is_some() {
@@ -364,9 +361,7 @@ impl eframe::App for App {
                 };
                 ui.add_enabled_ui(sync_enabled, |ui| {
                     let btn = egui::Button::new(
-                        egui::RichText::new("  Sync Now  ")
-                            .size(16.0)
-                            .strong(),
+                        egui::RichText::new("  Sync Now  ").size(16.0).strong(),
                     )
                     .min_size(egui::vec2(120.0, 32.0));
                     if ui.add(btn).clicked() {
@@ -375,9 +370,7 @@ impl eframe::App for App {
                 });
 
                 if ui
-                    .add(
-                        egui::Button::new("Save Config").min_size(egui::vec2(110.0, 32.0)),
-                    )
+                    .add(egui::Button::new("Save Config").min_size(egui::vec2(110.0, 32.0)))
                     .clicked()
                 {
                     self.save_config();
@@ -389,6 +382,13 @@ impl eframe::App for App {
                 {
                     let p = AppConfig::log_path();
                     let _ = open::that(p);
+                }
+
+                if ui
+                    .add(egui::Button::new("Exit").min_size(egui::vec2(70.0, 32.0)))
+                    .clicked()
+                {
+                    self.request_exit(ctx);
                 }
 
                 if busy {
@@ -404,6 +404,7 @@ impl eframe::App for App {
 
             ui.add_space(12.0);
             ui.separator();
+
             let lines = self.logger.snapshot();
             let log_text = lines.join("\n");
 
@@ -425,14 +426,11 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.set_min_height(220.0);
                     ui.set_width(ui.available_width());
-                    // Selectable monospace lines — drag to select, Ctrl+C to copy.
                     for line in &lines {
                         ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(line).monospace().size(13.0),
-                            )
-                            .selectable(true)
-                            .wrap(),
+                            egui::Label::new(egui::RichText::new(line).monospace().size(13.0))
+                                .selectable(true)
+                                .wrap(),
                         );
                     }
                     if lines.is_empty() {
@@ -444,9 +442,6 @@ impl eframe::App for App {
                 });
             self.last_log_len = lines.len();
         });
-
-        // Keep unused warning quiet
-        let _ = frame;
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -456,13 +451,12 @@ impl eframe::App for App {
 
 fn build_tray(
     ctx: egui::Context,
-    show: Arc<AtomicBool>,
     sync: Arc<AtomicBool>,
-    quit: Arc<AtomicBool>,
-    logger: &Logger,
+    allow_exit: Arc<AtomicBool>,
+    logger: Logger,
 ) -> Option<tray_icon::TrayIcon> {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-    use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconBuilder};
+    use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     let icon = match make_icon() {
         Ok(i) => i,
@@ -503,28 +497,41 @@ fn build_tray(
         }
     };
 
-    // Menu clicks: set flags AND wake egui (hidden windows stop ticking otherwise).
-    let ctx_menu = ctx.clone();
-    let show_menu = Arc::clone(&show);
+    // Menu events: act immediately (Win32 show / process exit), don't wait for egui.
+    let logger_menu = logger.clone();
     let sync_menu = Arc::clone(&sync);
-    let quit_menu = Arc::clone(&quit);
+    let allow_exit_menu = Arc::clone(&allow_exit);
+    let ctx_menu = ctx.clone();
     thread::spawn(move || {
         let rx = MenuEvent::receiver();
         while let Ok(ev) = rx.recv() {
             if ev.id == show_id {
-                show_menu.store(true, Ordering::SeqCst);
+                logger_menu.log("Tray menu: Show");
+                let ok = winutil::show_main_window();
+                logger_menu.log(format!("Win32 show_main_window → {ok}"));
+                ctx_menu.request_repaint();
             } else if ev.id == sync_id {
+                logger_menu.log("Tray menu: Sync Now");
+                let ok = winutil::show_main_window();
+                logger_menu.log(format!("Win32 show_main_window → {ok}"));
                 sync_menu.store(true, Ordering::SeqCst);
+                ctx_menu.request_repaint();
             } else if ev.id == quit_id {
-                quit_menu.store(true, Ordering::SeqCst);
+                logger_menu.log("Tray menu: Quit");
+                allow_exit_menu.store(true, Ordering::SeqCst);
+                let _ = winutil::show_main_window();
+                ctx_menu.request_repaint();
+                // Don't depend on egui close path — exit hard after a brief flush window.
+                thread::sleep(Duration::from_millis(150));
+                logger_menu.log("Exiting process");
+                std::process::exit(0);
             }
-            ctx_menu.request_repaint();
         }
     });
 
-    // Left-click tray icon → Show
-    let ctx_icon = ctx.clone();
-    let show_click = Arc::clone(&show);
+    // Left-click tray icon → Show via Win32
+    let logger_click = logger.clone();
+    let ctx_click = ctx.clone();
     thread::spawn(move || {
         let rx = TrayIconEvent::receiver();
         while let Ok(ev) = rx.recv() {
@@ -534,22 +541,23 @@ fn build_tray(
                 ..
             } = ev
             {
-                show_click.store(true, Ordering::SeqCst);
-                ctx_icon.request_repaint();
+                logger_click.log("Tray icon left-click → Show");
+                let ok = winutil::show_main_window();
+                logger_click.log(format!("Win32 show_main_window → {ok}"));
+                ctx_click.request_repaint();
             }
         }
     });
 
+    logger.log("Tray icon ready");
     Some(tray)
 }
 
 fn make_icon() -> Result<tray_icon::Icon, String> {
-    // Solid teal 32x32 PNG-less raw RGBA
     let size = 32u32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            // Simple rounded-square look
             let edge = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
             if edge {
                 rgba.extend_from_slice(&[0, 0, 0, 0]);
@@ -562,7 +570,6 @@ fn make_icon() -> Result<tray_icon::Icon, String> {
 }
 
 fn show_notification(title: &str, body: &str) {
-    // Best-effort toast via PowerShell. CREATE_NO_WINDOW avoids a flashing console.
     let title = title.replace('\'', "''");
     let body = body.replace('\'', "''");
     let script = format!(
@@ -573,9 +580,16 @@ fn show_notification(title: &str, body: &str) {
          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('KindleVaultSync').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
     );
     let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &script,
+    ])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -590,12 +604,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([640.0, 520.0])
             .with_min_inner_size([480.0, 400.0])
-            .with_title("Kindle Vault Sync"),
+            .with_title(winutil::WINDOW_TITLE),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Kindle Vault Sync",
+        winutil::WINDOW_TITLE,
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
