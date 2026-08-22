@@ -6,6 +6,7 @@ local LuaSettings = require("luasettings")
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
 local LinkHandler = require("linkhandler")
+local lfs = require("libs/libkoreader-lfs")
 local T = require("ffi/util").template
 local _ = require("gettext")
 
@@ -60,6 +61,9 @@ function ObsidianPlugin:init()
     self._shared = _G._obsidian_shared
     self:loadSettings()
     self:onDispatcherRegisterActions()
+    -- sorting_hint alone only APPENDs orphans to a tab (always last).
+    -- Force "obsidian" to the top of navi/tools via KOReader's menu-order override.
+    self:ensureMenuPlacement()
     self.ui.menu:registerToMainMenu(self)
     -- link handler: only active when a document is open
     if self.ui.document then
@@ -71,6 +75,134 @@ function ObsidianPlugin:init()
             self:promptVaultRoot()
         end)
     end
+end
+
+--- Put "obsidian" first under reader navi / FM tools.
+-- KOReader merges settings/<prefix>_menu_order.lua over defaults (MenuSorter).
+-- See: frontend/ui/menusorter.lua + ui/elements/reader_menu_order.lua
+function ObsidianPlugin:ensureMenuPlacement()
+    self:_ensureSectionFirst(
+        "reader_menu_order.lua",
+        "ui/elements/reader_menu_order",
+        "navi"
+    )
+    self:_ensureSectionFirst(
+        "filemanager_menu_order.lua",
+        "ui/elements/filemanager_menu_order",
+        "tools"
+    )
+end
+
+function ObsidianPlugin:_ensureSectionFirst(filename, default_module, section)
+    local ok_def, default_order = pcall(require, default_module)
+    if not ok_def or type(default_order) ~= "table" then
+        return
+    end
+    local default_section = default_order[section]
+    if type(default_section) ~= "table" then
+        return
+    end
+
+    local path = DataStorage:getSettingsDir() .. "/" .. filename
+    local user_order = {}
+    if lfs.attributes(path, "mode") == "file" then
+        local ok_user, loaded = pcall(dofile, path)
+        if ok_user and type(loaded) == "table" then
+            user_order = loaded
+        end
+    end
+
+    local base = user_order[section] or default_section
+    local new_list = { "obsidian" }
+    local seen = { obsidian = true }
+    for _, id in ipairs(base) do
+        if type(id) == "string" and not seen[id] then
+            table.insert(new_list, id)
+            seen[id] = true
+        end
+    end
+
+    -- Already correct — avoid rewriting the file every launch.
+    local cur = user_order[section]
+    if type(cur) == "table" and #cur == #new_list then
+        local same = true
+        for i = 1, #new_list do
+            if cur[i] ~= new_list[i] then
+                same = false
+                break
+            end
+        end
+        if same then
+            return
+        end
+    end
+
+    user_order[section] = new_list
+    self:_writeMenuOrderFile(path, user_order)
+end
+
+function ObsidianPlugin:_writeMenuOrderFile(path, order_table)
+    local lines = {
+        "-- Generated/updated by obsidian.koplugin to place Obsidian Vault first.",
+        "-- Safe to edit; plugin only ensures \"obsidian\" stays first in its section.",
+        "return {",
+    }
+    -- Stable-ish key order: write known sections first, then the rest.
+    local keys = {}
+    local seen = {}
+    for _, k in ipairs({
+        "KOMenu:menu_buttons",
+        "navi",
+        "navi_settings",
+        "typeset",
+        "setting",
+        "tools",
+        "more_tools",
+        "search",
+        "filemanager",
+        "filemanager_settings",
+        "main",
+        "plus_menu",
+        "KOMenu:disabled",
+    }) do
+        if order_table[k] ~= nil then
+            table.insert(keys, k)
+            seen[k] = true
+        end
+    end
+    for k in pairs(order_table) do
+        if not seen[k] then
+            table.insert(keys, k)
+        end
+    end
+
+    local function quote(s)
+        return string.format("%q", s)
+    end
+
+    for _, key in ipairs(keys) do
+        local val = order_table[key]
+        if type(val) == "table" then
+            table.insert(lines, string.format("    [%s] = {", quote(key)))
+            for _, id in ipairs(val) do
+                if type(id) == "string" then
+                    table.insert(lines, string.format("        %s,", quote(id)))
+                end
+            end
+            table.insert(lines, "    },")
+        end
+    end
+    table.insert(lines, "}")
+    table.insert(lines, "")
+
+    local f, err = io.open(path, "w")
+    if not f then
+        self:logLinkEvent("menu_order_write_fail", tostring(err))
+        return
+    end
+    f:write(table.concat(lines, "\n"))
+    f:close()
+    self:logLinkEvent("menu_order_updated", path)
 end
 
 function ObsidianPlugin:loadSettings()
@@ -94,8 +226,8 @@ function ObsidianPlugin:addToMainMenu(menu_items)
         .. " | back_stack.len=" .. tostring(#self._shared.back_stack)
         .. " | ui.document.file=" .. tostring(self.ui.document and self.ui.document.file))
     local vault_root_text = self.settings:readSetting("vault_root") or _("(not set)")
-    -- Reader: first top-tab is "navi" (see reader_menu_order.lua).
-    -- File manager has no "navi" tab — keep "tools" there.
+    -- Placement is forced via reader_menu_order.lua / filemanager_menu_order.lua
+    -- (ensureMenuPlacement). sorting_hint is only a fallback if order file is missing.
     local hint = (self.ui and self.ui.document) and "navi" or "tools"
     menu_items.obsidian = {
         text = _("Obsidian Vault"),
