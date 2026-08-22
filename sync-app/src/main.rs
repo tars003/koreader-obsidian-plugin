@@ -391,29 +391,40 @@ impl eframe::App for App {
 
             ui.add_space(12.0);
             ui.separator();
+            let lines = self.logger.snapshot();
+            let log_text = lines.join("\n");
+
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Log").strong());
                 ui.checkbox(&mut self.auto_scroll, "auto-scroll");
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(log_text.clone());
+                    self.config_msg = Some("Log copied to clipboard.".into());
+                }
                 if ui.button("Clear").clicked() {
                     self.logger.clear_ui();
                 }
             });
 
-            let lines = self.logger.snapshot();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .stick_to_bottom(self.auto_scroll)
                 .show(ui, |ui| {
                     ui.set_min_height(220.0);
                     ui.set_width(ui.available_width());
-                    // Monospace block
-                    let text = lines.join("\n");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut text.as_str())
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .interactive(false),
-                    );
+                    // Selectable monospace lines — drag to select, Ctrl+C to copy.
+                    for line in &lines {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(line).monospace().size(13.0),
+                            )
+                            .selectable(true)
+                            .wrap(),
+                        );
+                    }
+                    if lines.is_empty() {
+                        ui.weak("(empty)");
+                    }
                     if self.auto_scroll && lines.len() != self.last_log_len {
                         ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                     }

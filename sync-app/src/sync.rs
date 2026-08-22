@@ -123,8 +123,11 @@ fn run_sync(
     let converter_dir = PathBuf::from(&cfg.paths.converter_dir);
     let toml_path = cfg.converter_toml();
 
+    // Force UTF-8 stdio so progress prints with non-ASCII never crash on cp1252.
     let mut child = Command::new(&python)
         .current_dir(&converter_dir)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .args([
             "-m",
             "md2kindle",
@@ -158,7 +161,21 @@ fn run_sync(
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        let tail: String = err.chars().rev().take(500).collect::<String>().chars().rev().collect();
+        // Keep the last ~12 lines of stderr — more useful than a char-reversed slice.
+        let tail: String = err
+            .lines()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        for line in tail.lines() {
+            if !line.trim().is_empty() {
+                logger.log(line);
+            }
+        }
         let msg = if tail.trim().is_empty() {
             format!(
                 "Converter failed (exit {}).",

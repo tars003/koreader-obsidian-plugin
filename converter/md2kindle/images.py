@@ -46,7 +46,7 @@ def _optimize(data: bytes, opts: ImageOptions) -> bytes:
 
 def _fetch_remote(url: str, opts: ImageOptions, transport=None):
     import time as _time
-    print(f"    ↡ {url[:80]}{'...' if len(url) > 80 else ''}", flush=True)
+    print(f"    -> {url[:80]}{'...' if len(url) > 80 else ''}", flush=True)
     client_kwargs = {"timeout": opts.timeout, "follow_redirects": True}
     if transport is not None:
         client_kwargs["transport"] = transport
@@ -121,7 +121,7 @@ class ImageCache:
             entry = self.manifest.get_image(src)
             if entry and not entry.get("failed") and entry.get("file"):
                 return Path(entry["file"]).name
-            print(f"  ↡ {src}", flush=True)
+            print(f"  -> {src}", flush=True)
             data, _err = _fetch_remote(src, self.opts, self.transport)
             if data is None:
                 self.manifest.set_image(src, None, None, True)
