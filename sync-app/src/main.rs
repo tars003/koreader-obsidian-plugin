@@ -15,8 +15,11 @@ use logutil::Logger;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sync::{new_shared_status, SharedStatus, SyncPhase};
+
+/// Seconds to wait after plug-in before auto-starting sync (visible countdown).
+const AUTO_SYNC_DELAY_SECS: u64 = 3;
 
 /// Shared detection result from the background poller.
 #[derive(Clone, Default)]
@@ -48,7 +51,10 @@ struct App {
     tray_sync_requested: Arc<AtomicBool>,
     /// When true, close really exits (tray Quit / Exit button).
     allow_exit: Arc<AtomicBool>,
-    last_notified_root: Option<String>,
+    /// Edge-detect plug-in (cleared on unplug / successful eject).
+    kindle_was_present: bool,
+    /// When set, auto-sync fires at this instant (countdown shown in UI).
+    auto_sync_at: Option<Instant>,
 }
 
 impl App {
@@ -121,7 +127,22 @@ impl App {
             _tray: tray,
             tray_sync_requested,
             allow_exit,
-            last_notified_root: None,
+            kindle_was_present: false,
+            auto_sync_at: None,
+        }
+    }
+
+    fn bring_window_to_front(&self, ctx: &egui::Context) {
+        let _ = winutil::show_main_window();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
+    fn cancel_auto_sync(&mut self, reason: &str) {
+        if self.auto_sync_at.take().is_some() {
+            self.logger.log(format!("Auto-sync cancelled ({reason})"));
         }
     }
 
@@ -166,11 +187,22 @@ impl App {
         }
     }
 
-    fn refresh_detection(&mut self) {
+    /// Poll drives. Returns `true` on rising edge (Kindle just appeared).
+    fn refresh_detection(&mut self) -> bool {
         let label = self.volume_label.trim();
         let found = detect::find_kindle(label);
         if let Ok(mut g) = self.detect.lock() {
             g.kindle = found.clone();
+        }
+
+        let present = found.is_some();
+        let just_plugged = present && !self.kindle_was_present;
+        let just_unplugged = !present && self.kindle_was_present;
+        self.kindle_was_present = present;
+
+        if just_unplugged {
+            self.logger.log("Kindle disconnected");
+            self.cancel_auto_sync("Kindle unplugged");
         }
 
         let busy = self.busy.load(Ordering::SeqCst);
@@ -179,6 +211,28 @@ impl App {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
+
+        // Countdown status takes priority when armed and not busy.
+        if !busy {
+            if let Some(at) = self.auto_sync_at {
+                let left = at.saturating_duration_since(Instant::now());
+                let secs = left.as_secs().saturating_add(if left.subsec_millis() > 0 {
+                    1
+                } else {
+                    0
+                });
+                if let Some(d) = &found {
+                    self.status_line = format!(
+                        "Kindle at {} — auto-sync in {}s…",
+                        d.root,
+                        secs.max(1)
+                    );
+                } else {
+                    self.status_line = format!("Auto-sync in {}s…", secs.max(1));
+                }
+                return just_plugged;
+            }
+        }
 
         if busy {
             self.status_line = match sync_status.phase {
@@ -191,30 +245,79 @@ impl App {
             };
         } else if let Some(d) = &found {
             self.status_line = format!("Kindle detected at {}", d.root);
-            if self.last_notified_root.as_deref() != Some(d.root.as_str()) {
-                self.last_notified_root = Some(d.root.clone());
-                self.logger.log(format!("Kindle detected at {}", d.root));
-                notify::show(
-                    "Kindle Vault Sync",
-                    &format!("Kindle detected at {}. Open app → Sync Now.", d.root),
-                );
-            }
+        } else if matches!(sync_status.phase, SyncPhase::Done | SyncPhase::Error)
+            && !sync_status.detail.is_empty()
+        {
+            self.status_line = sync_status.detail.clone();
         } else {
-            if self.last_notified_root.is_some() {
-                self.logger.log("Kindle disconnected");
-            }
-            self.last_notified_root = None;
-            if matches!(sync_status.phase, SyncPhase::Done | SyncPhase::Error)
-                && !sync_status.detail.is_empty()
-            {
-                self.status_line = sync_status.detail.clone();
-            } else {
-                self.status_line = "Waiting for Kindle...".into();
-            }
+            self.status_line = "Waiting for Kindle...".into();
         }
+
+        just_plugged
+    }
+
+    fn on_kindle_plugged_in(&mut self, ctx: &egui::Context, root: &str) {
+        self.logger.log(format!("Kindle plugged in at {root}"));
+        // Always bring UI to the front — nothing stays hidden on detect.
+        self.bring_window_to_front(ctx);
+        notify::show(
+            "Kindle Vault Sync",
+            &format!("Kindle detected at {root}. Auto-sync in {AUTO_SYNC_DELAY_SECS}s."),
+        );
+
+        self.apply_fields_to_cfg();
+        if self.busy.load(Ordering::SeqCst) {
+            self.logger.log("Already syncing — skip auto-sync countdown");
+            return;
+        }
+        if !self.cfg.is_configured() {
+            self.config_msg = Some("Kindle detected — set Converter dir and Save Config.".into());
+            self.logger.log("Not configured — auto-sync not armed");
+            return;
+        }
+
+        self.auto_sync_at = Some(Instant::now() + Duration::from_secs(AUTO_SYNC_DELAY_SECS));
+        self.logger.log(format!(
+            "Auto-sync armed ({AUTO_SYNC_DELAY_SECS}s countdown)"
+        ));
+        self.status_line = format!(
+            "Kindle at {root} — auto-sync in {AUTO_SYNC_DELAY_SECS}s…"
+        );
+        ctx.request_repaint();
+    }
+
+    fn tick_auto_sync(&mut self, ctx: &egui::Context) {
+        let Some(at) = self.auto_sync_at else {
+            return;
+        };
+        if self.busy.load(Ordering::SeqCst) {
+            self.cancel_auto_sync("sync already running");
+            return;
+        }
+        // Keep UI smooth during countdown.
+        ctx.request_repaint_after(Duration::from_millis(100));
+
+        if Instant::now() < at {
+            // Refresh status text with remaining seconds.
+            let left = at.saturating_duration_since(Instant::now());
+            let secs = left.as_secs().saturating_add(if left.subsec_nanos() > 0 { 1 } else { 0 });
+            let root = self
+                .detect
+                .lock()
+                .ok()
+                .and_then(|g| g.kindle.as_ref().map(|d| d.root.clone()))
+                .unwrap_or_else(|| "?".into());
+            self.status_line = format!("Kindle at {root} — auto-sync in {}s…", secs.max(1));
+            return;
+        }
+
+        self.auto_sync_at = None;
+        self.logger.log("Auto-sync countdown finished — starting sync");
+        self.start_sync();
     }
 
     fn start_sync(&mut self) {
+        self.auto_sync_at = None; // manual or auto — clear countdown
         self.apply_fields_to_cfg();
         if !self.cfg.is_configured() {
             self.logger
@@ -269,16 +372,23 @@ impl eframe::App for App {
         let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
         if now_ms.saturating_sub(LAST.load(Ordering::Relaxed)) > 500 {
             LAST.store(now_ms, Ordering::Relaxed);
-            self.refresh_detection();
+            if self.refresh_detection() {
+                let root = self
+                    .detect
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.kindle.as_ref().map(|d| d.root.clone()))
+                    .unwrap_or_else(|| "?".into());
+                self.on_kindle_plugged_in(ctx, &root);
+            }
         }
+
+        self.tick_auto_sync(ctx);
 
         // Tray "Sync Now" — Show is handled in the tray thread via Win32.
         if self.tray_sync_requested.swap(false, Ordering::SeqCst) {
             self.logger.log("Sync from tray");
-            let _ = winutil::show_main_window();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.bring_window_to_front(ctx);
             self.start_sync();
         }
 
@@ -365,7 +475,10 @@ impl eframe::App for App {
 
             ui.add_space(10.0);
 
-            let status_color = if busy {
+            let countdown_active = self.auto_sync_at.is_some() && !busy;
+            let status_color = if countdown_active {
+                egui::Color32::from_rgb(255, 200, 80)
+            } else if busy {
                 egui::Color32::from_rgb(120, 180, 255)
             } else if kindle_present.is_some() {
                 egui::Color32::from_rgb(120, 220, 140)
@@ -374,8 +487,58 @@ impl eframe::App for App {
             };
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Status:").strong());
-                ui.label(egui::RichText::new(&self.status_line).color(status_color));
+                ui.label(
+                    egui::RichText::new(&self.status_line)
+                        .color(status_color)
+                        .size(if countdown_active { 18.0 } else { 15.0 })
+                        .strong(),
+                );
             });
+
+            if countdown_active {
+                ui.add_space(6.0);
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_rgb(50, 40, 10))
+                    .corner_radius(4.0)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Auto-sync starting…")
+                                    .color(egui::Color32::from_rgb(255, 220, 120))
+                                    .size(16.0)
+                                    .strong(),
+                            );
+                            ui.add_space(12.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Cancel").strong(),
+                                    )
+                                    .min_size(egui::vec2(90.0, 28.0)),
+                                )
+                                .clicked()
+                            {
+                                self.cancel_auto_sync("user cancelled");
+                                if let Some(d) = &kindle_present {
+                                    self.status_line =
+                                        format!("Kindle detected at {} — auto-sync cancelled", d.root);
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Sync now").strong(),
+                                    )
+                                    .min_size(egui::vec2(90.0, 28.0)),
+                                )
+                                .clicked()
+                            {
+                                self.start_sync();
+                            }
+                        });
+                    });
+            }
 
             ui.add_space(10.0);
 
