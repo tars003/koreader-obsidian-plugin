@@ -21,10 +21,17 @@ use sync::{new_shared_status, SharedStatus, SyncPhase};
 /// Seconds to wait after plug-in before auto-starting sync (visible countdown).
 const AUTO_SYNC_DELAY_SECS: u64 = 3;
 
-/// Shared detection result from the background poller.
-#[derive(Clone, Default)]
-struct DetectState {
+/// Shared state written by the background drive watcher (always-on thread).
+/// Must NOT depend on the egui update loop — that freezes while the window is hidden.
+struct WatchState {
     kindle: Option<detect::DetectedDrive>,
+    /// Live label the watcher matches (updated from UI / Save Config).
+    volume_label: String,
+    poll_interval_secs: u64,
+    /// Set by watcher on rising edge; UI takes() it to arm countdown.
+    plug_event: Option<String>,
+    /// Set by watcher on falling edge; UI takes it to cancel countdown.
+    unplug_event: bool,
 }
 
 struct App {
@@ -36,7 +43,7 @@ struct App {
     run_at_startup: bool,
 
     logger: Logger,
-    detect: Arc<Mutex<DetectState>>,
+    watch: Arc<Mutex<WatchState>>,
     status: SharedStatus,
     busy: Arc<AtomicBool>,
 
@@ -51,8 +58,6 @@ struct App {
     tray_sync_requested: Arc<AtomicBool>,
     /// When true, close really exits (tray Quit / Exit button).
     allow_exit: Arc<AtomicBool>,
-    /// Edge-detect plug-in (cleared on unplug / successful eject).
-    kindle_was_present: bool,
     /// When set, auto-sync fires at this instant (countdown shown in UI).
     auto_sync_at: Option<Instant>,
 }
@@ -78,18 +83,33 @@ impl App {
         let logger = Logger::new(AppConfig::log_path());
         logger.log("App started");
 
-        let detect = Arc::new(Mutex::new(DetectState::default()));
+        let watch = Arc::new(Mutex::new(WatchState {
+            kindle: None,
+            volume_label: cfg.kindle.volume_label.clone(),
+            // Never slower than 2s — hidden/tray mode must still detect quickly.
+            poll_interval_secs: cfg.behavior.poll_interval_secs.clamp(2, 30),
+            plug_event: None,
+            unplug_event: false,
+        }));
+
         let status = new_shared_status();
         let busy = Arc::new(AtomicBool::new(false));
         let tray_sync_requested = Arc::new(AtomicBool::new(false));
         let allow_exit = Arc::new(AtomicBool::new(false));
 
-        // Heartbeat: keep egui waking even while the window is hidden so
-        // drive polling + tray sync flags still run.
+        // Background watcher — independent of window visibility / egui update.
+        spawn_drive_watcher(
+            Arc::clone(&watch),
+            logger.clone(),
+            Arc::clone(&busy),
+            cc.egui_ctx.clone(),
+        );
+
+        // Light heartbeat so countdown UI stays smooth when visible.
         {
             let ctx = cc.egui_ctx.clone();
             thread::spawn(move || loop {
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_millis(200));
                 ctx.request_repaint();
             });
         }
@@ -116,7 +136,7 @@ impl App {
             vault_folder,
             run_at_startup,
             logger,
-            detect,
+            watch,
             status,
             busy,
             status_line: "Waiting for Kindle...".into(),
@@ -127,7 +147,6 @@ impl App {
             _tray: tray,
             tray_sync_requested,
             allow_exit,
-            kindle_was_present: false,
             auto_sync_at: None,
         }
     }
@@ -152,6 +171,11 @@ impl App {
         self.cfg.kindle.volume_label = self.volume_label.trim().to_string();
         self.cfg.kindle.vault_folder = self.vault_folder.trim().to_string();
         self.cfg.behavior.run_at_startup = self.run_at_startup;
+        // Keep watcher in sync with UI label without waiting for Save.
+        if let Ok(mut g) = self.watch.lock() {
+            g.volume_label = self.cfg.kindle.volume_label.clone();
+            g.poll_interval_secs = self.cfg.behavior.poll_interval_secs.clamp(2, 30);
+        }
     }
 
     fn save_config(&mut self) {
@@ -187,24 +211,29 @@ impl App {
         }
     }
 
-    /// Poll drives. Returns `true` on rising edge (Kindle just appeared).
-    fn refresh_detection(&mut self) -> bool {
-        let label = self.volume_label.trim();
-        let found = detect::find_kindle(label);
-        if let Ok(mut g) = self.detect.lock() {
-            g.kindle = found.clone();
-        }
+    /// Pull plug/unplug events from the background watcher + refresh status text.
+    fn poll_watch_events(&mut self, ctx: &egui::Context) {
+        let (plug, unplug, kindle) = if let Ok(mut g) = self.watch.lock() {
+            let plug = g.plug_event.take();
+            let unplug = std::mem::take(&mut g.unplug_event);
+            (plug, unplug, g.kindle.clone())
+        } else {
+            (None, false, None)
+        };
 
-        let present = found.is_some();
-        let just_plugged = present && !self.kindle_was_present;
-        let just_unplugged = !present && self.kindle_was_present;
-        self.kindle_was_present = present;
-
-        if just_unplugged {
-            self.logger.log("Kindle disconnected");
+        if unplug {
             self.cancel_auto_sync("Kindle unplugged");
         }
 
+        // Rising-edge only — never fires just because the user clicked Show.
+        if let Some(root) = plug {
+            self.on_kindle_plugged_in(ctx, &root);
+        }
+
+        self.refresh_status_line(kindle.as_ref());
+    }
+
+    fn refresh_status_line(&mut self, kindle: Option<&detect::DetectedDrive>) {
         let busy = self.busy.load(Ordering::SeqCst);
         let sync_status = self
             .status
@@ -212,16 +241,15 @@ impl App {
             .map(|g| g.clone())
             .unwrap_or_default();
 
-        // Countdown status takes priority when armed and not busy.
         if !busy {
             if let Some(at) = self.auto_sync_at {
                 let left = at.saturating_duration_since(Instant::now());
-                let secs = left.as_secs().saturating_add(if left.subsec_millis() > 0 {
+                let secs = left.as_secs().saturating_add(if left.subsec_nanos() > 0 {
                     1
                 } else {
                     0
                 });
-                if let Some(d) = &found {
+                if let Some(d) = kindle {
                     self.status_line = format!(
                         "Kindle at {} — auto-sync in {}s…",
                         d.root,
@@ -230,7 +258,7 @@ impl App {
                 } else {
                     self.status_line = format!("Auto-sync in {}s…", secs.max(1));
                 }
-                return just_plugged;
+                return;
             }
         }
 
@@ -243,7 +271,7 @@ impl App {
                 SyncPhase::Error => format!("Error: {}", sync_status.detail),
                 SyncPhase::Idle => "Working…".into(),
             };
-        } else if let Some(d) = &found {
+        } else if let Some(d) = kindle {
             self.status_line = format!("Kindle detected at {}", d.root);
         } else if matches!(sync_status.phase, SyncPhase::Done | SyncPhase::Error)
             && !sync_status.detail.is_empty()
@@ -252,20 +280,14 @@ impl App {
         } else {
             self.status_line = "Waiting for Kindle...".into();
         }
-
-        just_plugged
     }
 
     fn on_kindle_plugged_in(&mut self, ctx: &egui::Context, root: &str) {
-        self.logger.log(format!("Kindle plugged in at {root}"));
-        // Always bring UI to the front — nothing stays hidden on detect.
+        // Window + balloon already fired from the watcher thread.
+        // Here we only arm the visible countdown / handle config gaps.
         self.bring_window_to_front(ctx);
-        notify::show(
-            "Kindle Vault Sync",
-            &format!("Kindle detected at {root}. Auto-sync in {AUTO_SYNC_DELAY_SECS}s."),
-        );
-
         self.apply_fields_to_cfg();
+
         if self.busy.load(Ordering::SeqCst) {
             self.logger.log("Already syncing — skip auto-sync countdown");
             return;
@@ -280,9 +302,8 @@ impl App {
         self.logger.log(format!(
             "Auto-sync armed ({AUTO_SYNC_DELAY_SECS}s countdown)"
         ));
-        self.status_line = format!(
-            "Kindle at {root} — auto-sync in {AUTO_SYNC_DELAY_SECS}s…"
-        );
+        self.status_line =
+            format!("Kindle at {root} — auto-sync in {AUTO_SYNC_DELAY_SECS}s…");
         ctx.request_repaint();
     }
 
@@ -302,7 +323,7 @@ impl App {
             let left = at.saturating_duration_since(Instant::now());
             let secs = left.as_secs().saturating_add(if left.subsec_nanos() > 0 { 1 } else { 0 });
             let root = self
-                .detect
+                .watch
                 .lock()
                 .ok()
                 .and_then(|g| g.kindle.as_ref().map(|d| d.root.clone()))
@@ -367,25 +388,13 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Drive poll ~2 Hz (heartbeat also keeps this alive while hidden)
-        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
-        if now_ms.saturating_sub(LAST.load(Ordering::Relaxed)) > 500 {
-            LAST.store(now_ms, Ordering::Relaxed);
-            if self.refresh_detection() {
-                let root = self
-                    .detect
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.kindle.as_ref().map(|d| d.root.clone()))
-                    .unwrap_or_else(|| "?".into());
-                self.on_kindle_plugged_in(ctx, &root);
-            }
-        }
-
+        // Consume plug/unplug events from the always-on watcher thread.
+        // (Do NOT poll drives here — that froze while the window was hidden.)
+        self.poll_watch_events(ctx);
         self.tick_auto_sync(ctx);
 
         // Tray "Sync Now" — Show is handled in the tray thread via Win32.
+        // Opening the window alone must NOT arm auto-sync.
         if self.tray_sync_requested.swap(false, Ordering::SeqCst) {
             self.logger.log("Sync from tray");
             self.bring_window_to_front(ctx);
@@ -405,7 +414,7 @@ impl eframe::App for App {
 
         let busy = self.busy.load(Ordering::SeqCst);
         let kindle_present = self
-            .detect
+            .watch
             .lock()
             .ok()
             .and_then(|g| g.kindle.clone());
@@ -635,6 +644,93 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.logger.log("App exited");
     }
+}
+
+/// Always-on USB watcher. Runs even when the main window is hidden.
+fn spawn_drive_watcher(
+    watch: Arc<Mutex<WatchState>>,
+    logger: Logger,
+    busy: Arc<AtomicBool>,
+    ctx: egui::Context,
+) {
+    thread::spawn(move || {
+        // Seed presence so an already-plugged Kindle at launch does NOT auto-sync.
+        let mut was_present = {
+            let label = watch
+                .lock()
+                .map(|g| g.volume_label.clone())
+                .unwrap_or_else(|_| "Kindle".into());
+            let found = detect::find_kindle(&label);
+            if let Ok(mut g) = watch.lock() {
+                g.kindle = found.clone();
+            }
+            let present = found.is_some();
+            if present {
+                logger.log(format!(
+                    "Watcher: Kindle already present at {} — auto-sync waits for next plug-in",
+                    found.as_ref().map(|d| d.root.as_str()).unwrap_or("?")
+                ));
+            } else {
+                logger.log("Watcher: started (no Kindle yet)");
+            }
+            present
+        };
+
+        loop {
+            let (label, interval) = match watch.lock() {
+                Ok(g) => (
+                    g.volume_label.clone(),
+                    g.poll_interval_secs.clamp(2, 30),
+                ),
+                Err(_) => ("Kindle".into(), 2),
+            };
+
+            let found = detect::find_kindle(&label);
+            let present = found.is_some();
+
+            if present && !was_present {
+                // Rising edge — real plug-in while app may be in tray.
+                let root = found
+                    .as_ref()
+                    .map(|d| d.root.clone())
+                    .unwrap_or_else(|| "?".into());
+                logger.log(format!("Watcher: Kindle plugged in at {root}"));
+
+                // Immediate, no UI loop required:
+                let shown = winutil::show_main_window();
+                logger.log(format!("Watcher: show_main_window → {shown}"));
+                if !busy.load(Ordering::SeqCst) {
+                    notify::show(
+                        "Kindle Vault Sync",
+                        &format!(
+                            "Kindle detected at {root}. Auto-sync in {AUTO_SYNC_DELAY_SECS}s."
+                        ),
+                    );
+                }
+
+                if let Ok(mut g) = watch.lock() {
+                    g.kindle = found.clone();
+                    g.plug_event = Some(root);
+                    g.unplug_event = false;
+                }
+                ctx.request_repaint();
+            } else if !present && was_present {
+                logger.log("Watcher: Kindle disconnected");
+                if let Ok(mut g) = watch.lock() {
+                    g.kindle = None;
+                    g.unplug_event = true;
+                    g.plug_event = None;
+                }
+                ctx.request_repaint();
+            } else if let Ok(mut g) = watch.lock() {
+                // Steady state — keep snapshot fresh for the UI.
+                g.kindle = found.clone();
+            }
+
+            was_present = present;
+            thread::sleep(Duration::from_secs(interval));
+        }
+    });
 }
 
 fn build_tray(
