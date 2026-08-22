@@ -24,8 +24,22 @@ pub fn eject_drive(root: &str) -> Result<(), String> {
          $d.InvokeVerb('Eject')"
     );
 
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &script,
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("spawn powershell: {e}"))?;
 

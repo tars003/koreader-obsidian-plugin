@@ -46,6 +46,8 @@ struct App {
     tray_show_requested: Arc<AtomicBool>,
     tray_sync_requested: Arc<AtomicBool>,
     tray_quit_requested: Arc<AtomicBool>,
+    /// When true, the next close request really exits (tray Quit).
+    allow_exit: bool,
     last_notified_root: Option<String>,
 }
 
@@ -82,6 +84,7 @@ impl App {
         let tray_quit_requested = Arc::new(AtomicBool::new(false));
 
         let tray = build_tray(
+            cc.egui_ctx.clone(),
             Arc::clone(&tray_show_requested),
             Arc::clone(&tray_sync_requested),
             Arc::clone(&tray_quit_requested),
@@ -114,8 +117,16 @@ impl App {
             tray_show_requested,
             tray_sync_requested,
             tray_quit_requested,
+            allow_exit: false,
             last_notified_root: None,
         }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
     }
 
     fn apply_fields_to_cfg(&mut self) {
@@ -238,24 +249,26 @@ impl eframe::App for App {
         }
         ctx.request_repaint_after(Duration::from_millis(500));
 
-        // Tray menu actions
+        // Tray menu / icon actions (flags set from tray thread + request_repaint)
         if self.tray_quit_requested.swap(false, Ordering::SeqCst) {
             self.logger.log("Quit from tray");
+            self.allow_exit = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.tray_show_requested.swap(false, Ordering::SeqCst) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            self.logger.log("Show from tray");
+            self.show_window(ctx);
         }
         if self.tray_sync_requested.swap(false, Ordering::SeqCst) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.logger.log("Sync from tray");
+            self.show_window(ctx);
             self.start_sync();
         }
 
-        // Close-to-tray: intercept close and hide instead
+        // Close-to-tray: intercept close and hide instead (unless Quit was chosen)
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if close_requested {
+        if close_requested && !self.allow_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.logger.log("Minimized to tray");
@@ -442,15 +455,15 @@ impl eframe::App for App {
 }
 
 fn build_tray(
+    ctx: egui::Context,
     show: Arc<AtomicBool>,
     sync: Arc<AtomicBool>,
     quit: Arc<AtomicBool>,
     logger: &Logger,
 ) -> Option<tray_icon::TrayIcon> {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-    use tray_icon::TrayIconBuilder;
+    use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconBuilder};
 
-    // 16x16 simple blue-ish icon (RGBA)
     let icon = match make_icon() {
         Ok(i) => i,
         Err(e) => {
@@ -490,16 +503,39 @@ fn build_tray(
         }
     };
 
-    // Menu event listener thread
+    // Menu clicks: set flags AND wake egui (hidden windows stop ticking otherwise).
+    let ctx_menu = ctx.clone();
+    let show_menu = Arc::clone(&show);
+    let sync_menu = Arc::clone(&sync);
+    let quit_menu = Arc::clone(&quit);
     thread::spawn(move || {
         let rx = MenuEvent::receiver();
         while let Ok(ev) = rx.recv() {
             if ev.id == show_id {
-                show.store(true, Ordering::SeqCst);
+                show_menu.store(true, Ordering::SeqCst);
             } else if ev.id == sync_id {
-                sync.store(true, Ordering::SeqCst);
+                sync_menu.store(true, Ordering::SeqCst);
             } else if ev.id == quit_id {
-                quit.store(true, Ordering::SeqCst);
+                quit_menu.store(true, Ordering::SeqCst);
+            }
+            ctx_menu.request_repaint();
+        }
+    });
+
+    // Left-click tray icon → Show
+    let ctx_icon = ctx.clone();
+    let show_click = Arc::clone(&show);
+    thread::spawn(move || {
+        let rx = TrayIconEvent::receiver();
+        while let Ok(ev) = rx.recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = ev
+            {
+                show_click.store(true, Ordering::SeqCst);
+                ctx_icon.request_repaint();
             }
         }
     });
@@ -526,7 +562,7 @@ fn make_icon() -> Result<tray_icon::Icon, String> {
 }
 
 fn show_notification(title: &str, body: &str) {
-    // Best-effort balloon via PowerShell toast (works without extra crates)
+    // Best-effort toast via PowerShell. CREATE_NO_WINDOW avoids a flashing console.
     let title = title.replace('\'', "''");
     let body = body.replace('\'', "''");
     let script = format!(
@@ -536,11 +572,17 @@ fn show_notification(title: &str, body: &str) {
          $t.GetElementsByTagName('text').Item(1).AppendChild($t.CreateTextNode('{body}')) > $null; \
          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('KindleVaultSync').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
     );
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd.spawn();
 }
 
 fn main() -> eframe::Result<()> {
