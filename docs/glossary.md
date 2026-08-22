@@ -31,3 +31,5 @@
 - **NEW: vault tree** — the nested structure returned by scanVault (folders + .html files)
 - **NEW: kindle-vault-sync** — the Rust desktop app in `sync-app/` that detects Kindle USB, runs md2kindle, copies the vault, ejects
 - **NEW: sync-app** — repo directory for kindle-vault-sync
+- **NEW: sorting_hint** — KOReader menu placement key on a menu item (e.g. `navi`, `tools`); see reader_menu_order
+- **NEW: Dispatcher** — KOReader module that lists actions in Gesture Manager; plugins call `registerAction` then handle `on<Event>`

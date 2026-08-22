@@ -4,6 +4,7 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local LuaSettings = require("luasettings")
 local DataStorage = require("datastorage")
+local Dispatcher = require("dispatcher")
 local LinkHandler = require("linkhandler")
 local T = require("ffi/util").template
 local _ = require("gettext")
@@ -25,27 +26,41 @@ local ObsidianPlugin = WidgetContainer:extend{
     is_doc_only = false,
 }
 
+-- Register gesture/profile actions (KOReader Dispatcher API).
+-- Docs: https://koreader.rocks/doc/modules/dispatcher.html
+--   Dispatcher:registerAction(name, { category, event, title, general=true })
+-- Gesture Manager then lists these; binding fires Event → on<EventName>().
+function ObsidianPlugin:onDispatcherRegisterActions()
+    Dispatcher:registerAction("obsidian_browse_vault", {
+        category = "none",
+        event = "ObsidianBrowseVault",
+        title = _("Browse vault"),
+        general = true,
+    })
+    Dispatcher:registerAction("obsidian_go_back", {
+        category = "none",
+        event = "ObsidianGoBack",
+        title = _("Go back to previous note"),
+        general = true,
+        separator = true,
+    })
+end
+
+function ObsidianPlugin:onObsidianBrowseVault()
+    self:openVaultBrowser()
+    return true
+end
+
+function ObsidianPlugin:onObsidianGoBack()
+    self:goBack()
+    return true
+end
+
 function ObsidianPlugin:init()
     self._shared = _G._obsidian_shared
     self:loadSettings()
+    self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
-    -- Register with KOReader's Dispatcher so the vault actions
-    -- appear in the Gesture Manager for custom gestures.
-    pcall(function()
-        local Dispatcher = require("dispatcher")
-        Dispatcher:registerAction(
-            "obsidian_vault",
-            "obsidian_browse_vault",
-            _("Browse vault"),
-            function() self:openVaultBrowser() end
-        )
-        Dispatcher:registerAction(
-            "obsidian_vault",
-            "obsidian_go_back",
-            _("Go back to previous note"),
-            function() self:goBack() end
-        )
-    end)
     -- link handler: only active when a document is open
     if self.ui.document then
         self:initLinkHandler()
@@ -79,9 +94,12 @@ function ObsidianPlugin:addToMainMenu(menu_items)
         .. " | back_stack.len=" .. tostring(#self._shared.back_stack)
         .. " | ui.document.file=" .. tostring(self.ui.document and self.ui.document.file))
     local vault_root_text = self.settings:readSetting("vault_root") or _("(not set)")
+    -- Reader: first top-tab is "navi" (see reader_menu_order.lua).
+    -- File manager has no "navi" tab — keep "tools" there.
+    local hint = (self.ui and self.ui.document) and "navi" or "tools"
     menu_items.obsidian = {
         text = _("Obsidian Vault"),
-        sorting_hint = "tools",
+        sorting_hint = hint,
         sub_item_table = {
             {
                 text = _("Browse vault"),

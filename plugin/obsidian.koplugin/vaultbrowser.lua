@@ -199,31 +199,28 @@ function VaultBrowser.buildItemTable(tree, plugin)
         end)
     end
 
-    -- Toolbar: collapse all
+    -- Toolbar (keep labels short — long separators wrap on e-ink)
     table.insert(items, {
-        text = _("⤿ Collapse all"),
-        enabled_func = function() return true end,
+        text = _("Collapse all"),
         keep_menu_open = true,
         callback = function()
             VaultBrowser.collapseAll(tree)
             refresh()
         end,
     })
-    -- Toolbar: expand all
     table.insert(items, {
-        text = _("⤢ Expand all"),
-        enabled_func = function() return true end,
+        text = _("Expand all"),
         keep_menu_open = true,
         callback = function()
             VaultBrowser.expandAll(tree)
             refresh()
         end,
     })
-    -- Toolbar: focus current
     table.insert(items, {
-        text = _("◎ Focus current"),
-        enabled_func = function() return true end,
+        text = _("Focus current"),
         keep_menu_open = true,
+        -- Native menu separator under this row (avoids a wrapping "────" line)
+        separator = true,
         callback = function()
             local current_file = plugin.ui.document and plugin.ui.document.file
             if current_file then
@@ -236,13 +233,10 @@ function VaultBrowser.buildItemTable(tree, plugin)
                 else
                     UIManager:show(InfoMessage:new{ text = _("Current file not in vault."), timeout = 2 })
                 end
+            else
+                UIManager:show(InfoMessage:new{ text = _("No document open."), timeout = 2 })
             end
         end,
-    })
-    -- Separator
-    table.insert(items, {
-        text = _("───────────────────"),
-        enabled_func = function() return false end,
     })
 
     -- Tree items
