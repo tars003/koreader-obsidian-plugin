@@ -5,23 +5,16 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-.ruff_cache/
-dist/
-build/
 
-# md2kindle runtime config (user-specific; ship the .example instead)
+# Machine-local converter paths (ship md2kindle.toml.example)
 converter/md2kindle.toml
 
-# Rust (sync-app)
+# Rust build + kindle-vault-sync runtime files
 sync-app/target/
 sync-app/config.toml
 sync-app/kindle-sync.log
 
-# Editor / OS
+# Local caches / OS
+.npm-cache/
 .DS_Store
 Thumbs.db
-*.swp
-.idea/
-.vscode/
-.superpowers/
-.pi-subagents/
